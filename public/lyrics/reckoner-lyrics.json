@@ -1,0 +1,70 @@
+{
+  "_readme": "One entry per sung line. start/end are seconds in the recording, measured on the vocal stem (the line appears 0.35 s before it is sung). Empty text shows nothing.",
+  "lines": [
+    {
+      "start": 45.95,
+      "end": 56.3,
+      "text": "Reckoner"
+    },
+    {
+      "start": 57.15,
+      "end": 67.3,
+      "text": "You can't take it with you"
+    },
+    {
+      "start": 68.95,
+      "end": 78.9,
+      "text": "Dancing for your pleasure"
+    },
+    {
+      "start": 89.55,
+      "end": 100.7,
+      "text": "You are not to blame for"
+    },
+    {
+      "start": 100.85,
+      "end": 111.9,
+      "text": "Bittersweet distractor"
+    },
+    {
+      "start": 112.55,
+      "end": 121.7,
+      "text": "Dare not speak its name"
+    },
+    {
+      "start": 123.85,
+      "end": 133.2,
+      "text": "Dedicated to all hu–"
+    },
+    {
+      "start": 133.25,
+      "end": 147.5,
+      "text": "All human beings"
+    },
+    {
+      "start": 151.65,
+      "end": 169.7,
+      "text": "Because we separate like ripples on a blank shore (In rainbows)"
+    },
+    {
+      "start": 179.15,
+      "end": 197.5,
+      "text": "Because we separate like ripples on a blank shore (In rainbows)"
+    },
+    {
+      "start": 199.85,
+      "end": 208.5,
+      "text": "Reckoner"
+    },
+    {
+      "start": 211.25,
+      "end": 222.2,
+      "text": "Take me with you"
+    },
+    {
+      "start": 223.05,
+      "end": 245.8,
+      "text": "Dedicated to all human beings"
+    }
+  ]
+}
