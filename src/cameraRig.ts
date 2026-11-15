@@ -235,7 +235,7 @@ export class CinemaCameraRig {
     } else {
       // Critically damped 2nd-order fluid-head spring (`omega = 1.35 rad/s` -> slow, silky, weighted glide!)
       const stepDt = Math.min(0.05, Math.max(0.001, dt));
-      const omega = 1.35;
+      const omega = 2.6;
       const kSpring = omega * omega;
       const cDamp = 2.0 * omega * 1.08;
 
@@ -251,14 +251,15 @@ export class CinemaCameraRig {
     const shapedY = Math.tanh(this.smoothPointerY * 1.1) / Math.tanh(1.1);
 
     // Halved angular limits: ±5.6° horizontal, ±3.5° vertical!
-    const maxYawDeg = 5.6;
-    const maxPitchDeg = 3.5;
+    const maxYawDeg = 9.0;
+    const maxPitchDeg = 5.0;
     const yawRad = THREE.MathUtils.degToRad(-shapedX * maxYawDeg);
     const pitchRad = THREE.MathUtils.degToRad(-shapedY * maxPitchDeg);
 
     const finalPos = this.currentPos.clone();
-    finalPos.x += shapedX * 0.13;
-    finalPos.y += -shapedY * 0.07;
+    // keep translation tiny: window-shadow / water shaders are keyed to the eye position
+    finalPos.x += shapedX * 0.04;
+    finalPos.y += -shapedY * 0.02;
 
     const viewVec = this.currentTarget.clone().sub(finalPos);
     const dist = viewVec.length();

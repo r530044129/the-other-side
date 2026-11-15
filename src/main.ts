@@ -752,10 +752,40 @@ async function bootstrap() {
     choreographer.startExperience();
   });
 
-  window.addEventListener('pointermove', (e) => {
-    // Space is the only control: the pointer no longer steers the camera.
-    void e;
-  });
+  // Drag anywhere outside the timeline / debug panel / start veil to look around a little.
+  // The view stays where the player leaves it; the heavy spring in cameraRig gives the weight.
+  {
+    let dragId: number | null = null;
+    let lastX = 0;
+    let lastY = 0;
+    const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
+    canvas.style.touchAction = 'none';
+    window.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest('#timeline, #debug-panel, #start-veil, button, input')) return;
+      dragId = e.pointerId;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      document.body.classList.add('look-drag');
+    });
+    window.addEventListener('pointermove', (e) => {
+      if (dragId !== e.pointerId) return;
+      // dragging right/down turns the view like UE5 mouse-look (drag right = look right, drag up = look up): full range takes ~a quarter screen
+      const k = 2.0 / Math.max(200, window.innerWidth * 0.25);
+      pointerX = clamp1(pointerX + (e.clientX - lastX) * k);
+      pointerY = clamp1(pointerY + (e.clientY - lastY) * k);
+      lastX = e.clientX;
+      lastY = e.clientY;
+    });
+    const endDrag = (e: PointerEvent) => {
+      if (dragId !== e.pointerId) return;
+      dragId = null;
+      document.body.classList.remove('look-drag');
+    };
+    window.addEventListener('pointerup', endDrag);
+    window.addEventListener('pointercancel', endDrag);
+  }
 
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {

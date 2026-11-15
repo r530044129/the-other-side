@@ -510,3 +510,11 @@ body.clean-mode #subtle-prompt {
   padding: 5px 8px;
   color: rgba(218, 212, 202, 0.78);
 }
+
+body.look-drag,
+body.look-drag * {
+  cursor: grabbing !important;
+}
+#stage {
+  cursor: grab;
+}
