@@ -649,3 +649,54 @@ body.look-drag * {
   34% { transform: translateY(2px) scale(0.96); background: rgba(240, 212, 172, 0.2); }
   46% { transform: none; background: transparent; }
 }
+
+/* ───────── Phones and tablets (body.is-mobile is set in main.ts; see device.ts) ───────── */
+body.is-mobile,
+body.is-mobile * {
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+body.is-mobile {
+  touch-action: none;
+  overscroll-behavior: none;
+}
+/* keep the card and the timeline clear of the camera cut-out and the home bar */
+body.is-mobile #album-card {
+  left: max(2.6vw, env(safe-area-inset-left));
+}
+body.is-mobile #timeline {
+  left: max(2.6vw, env(safe-area-inset-left));
+  right: max(2.6vw, env(safe-area-inset-right));
+  bottom: env(safe-area-inset-bottom);
+}
+body.is-mobile #start-veil {
+  padding-bottom: max(6.5vh, calc(env(safe-area-inset-bottom) + 34px));
+}
+
+/* Landscape only for now: upright, a still card asks for the phone to be turned. */
+#rotate-hint {
+  display: none;
+}
+@media (orientation: portrait) {
+  body.is-mobile #rotate-hint {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    background: #020204;
+    color: rgba(240, 212, 172, 0.78);
+    font-size: 13px;
+    letter-spacing: 0.32em;
+    text-indent: 0.32em;
+  }
+  body.is-mobile #rotate-hint svg {
+    width: 54px;
+    height: 54px;
+    opacity: 0.8;
+  }
+}

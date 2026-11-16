@@ -19,6 +19,7 @@ import { createOtherSide } from './otherSide';
 import { createRoom } from './room';
 import { sstep } from './story';
 import { createNave } from './nave';
+import { isMobile, quality } from './device';
 
 declare global {
   interface Window {
@@ -145,17 +146,26 @@ async function bootstrap() {
   if (params.get('clean') === '1') {
     document.body.classList.add('clean-mode');
   }
+  // Phones and tablets: lighter picture (see device.ts), touch instead of the space key, landscape only.
+  if (isMobile) document.body.classList.add('is-mobile');
+  const ENTER_LABEL = isMobile ? '轻触画面进入' : '点击画面 或 按下 SPACE 进入';
+  const REENTER_LABEL = isMobile ? '轻触画面重新进入' : '点击画面 或 按下 SPACE 重新进入';
 
   const canvas = document.getElementById('stage') as HTMLCanvasElement;
   const startVeil = document.getElementById('start-veil')!;
   const subtlePromptEl = document.getElementById('subtle-prompt')!;
   // loading takes a while (the flower model is large): say so instead of inviting a click that does nothing
   const veilTextEl = startVeil.querySelector('.veil-text') as HTMLElement;
-  const veilReadyLabel = veilTextEl.textContent ?? '';
+  const veilReadyLabel = ENTER_LABEL;
   veilTextEl.textContent = '正在载入 …';
   const debugPanelEl = document.getElementById('debug-panel')!;
   const spaceHintEl = document.getElementById('space-hint') as HTMLElement;
   const spaceHintLabelEl = spaceHintEl.querySelector('.mode-label') as HTMLElement;
+  if (isMobile) {
+    // no space key on a phone: the same cap reads 长按 屏幕 / 轻点 屏幕
+    const keyEl = spaceHintEl.querySelector('.key') as HTMLElement;
+    if (keyEl.firstChild) keyEl.firstChild.textContent = '屏幕';
+  }
   const lyricEl = document.getElementById('lyric-line') as HTMLElement;
   const albumCardEl = document.getElementById('album-card') as HTMLElement;
   const timelineEl = document.getElementById('timeline') as HTMLElement;
@@ -200,14 +210,14 @@ async function bootstrap() {
   // Internal resolution: never more than MAX_RENDER_W pixels across, whatever the screen. On a 4K or
   // Retina display the picture is drawn at about 2560 wide and scaled up; grain and the soft lens hide
   // the difference, and every full-screen pass costs half as much. (?maxw=3840 lifts the cap.)
-  const MAX_RENDER_W = Number(params.get('maxw')) || 2560;
+  const MAX_RENDER_W = Number(params.get('maxw')) || quality.maxRenderW;
   const pickDpr = () => Math.min(window.devicePixelRatio || 1, 2, MAX_RENDER_W / Math.max(1, window.innerWidth));
   const dpr = pickDpr();
   const renderer = new THREE.WebGLRenderer({
     canvas,
-    antialias: true,
+    antialias: quality.canvasAntialias,
     powerPreference: 'high-performance',
-    preserveDrawingBuffer: true,
+    preserveDrawingBuffer: quality.preserveDrawingBuffer,
   });
   renderer.setPixelRatio(dpr);
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -654,7 +664,7 @@ async function bootstrap() {
     if (snap.hasStarted && snap.time < snap.duration - 0.15) {
       startVeil.classList.add('awakened');
     } else if (snap.time >= snap.duration - 0.15 && !snap.playing) {
-      startVeil.querySelector('.veil-text')!.textContent = '点击画面 或 按下 SPACE 重新进入';
+      startVeil.querySelector('.veil-text')!.textContent = REENTER_LABEL;
       startVeil.classList.remove('awakened');
     }
 
@@ -845,10 +855,43 @@ async function bootstrap() {
     let lastY = 0;
     const clamp1 = (v: number) => Math.max(-1, Math.min(1, v));
     canvas.style.touchAction = 'none';
+    // Touch: a finger that stays within this many pixels is a press; beyond it, a drag.
+    const TOUCH_SLOP_PX = 14;
+    let fingers = 0;
+    let touchSpace = false;
+    let touchLooking = false;
+    let downX = 0;
+    let downY = 0;
+    const releaseTouchSpace = () => {
+      if (!touchSpace) return;
+      touchSpace = false;
+      choreographer.onSpaceUp();
+    };
+    // no long-press menu, no pinch zoom of the page
+    if (isMobile) {
+      window.addEventListener('contextmenu', (e) => e.preventDefault());
+      document.addEventListener('gesturestart', (e) => e.preventDefault());
+    }
     window.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       const t = e.target as HTMLElement | null;
-      if (t && t.closest('#timeline, #debug-panel, #start-veil, button, input')) return;
+      if (t && t.closest('#timeline, #debug-panel, #start-veil, #rotate-hint, button, input')) return;
+      if (e.pointerType === 'touch') {
+        fingers++;
+        if (fingers > 1) {
+          // a second finger means "I am moving the view", never a press
+          releaseTouchSpace();
+          touchLooking = true;
+          return;
+        }
+        // One finger down is the space key going down, at once, so a tap lands on the beat and a hold
+        // is a hold. If the finger then travels, it turns into a look-around and the key is let go.
+        touchSpace = true;
+        touchLooking = false;
+        downX = e.clientX;
+        downY = e.clientY;
+        choreographer.onSpaceDown();
+      }
       dragId = e.pointerId;
       lastX = e.clientX;
       lastY = e.clientY;
@@ -856,6 +899,14 @@ async function bootstrap() {
     });
     window.addEventListener('pointermove', (e) => {
       if (dragId !== e.pointerId) return;
+      if (e.pointerType === 'touch' && !touchLooking) {
+        if (Math.hypot(e.clientX - downX, e.clientY - downY) < TOUCH_SLOP_PX) return;
+        touchLooking = true;
+        releaseTouchSpace();
+        lastX = e.clientX;
+        lastY = e.clientY;
+        return;
+      }
       // dragging right/down turns the view like UE5 mouse-look (drag right = look right, drag up = look up): full range takes ~a quarter screen
       const k = 2.0 / Math.max(200, window.innerWidth * 0.25);
       pointerX = clamp1(pointerX + (e.clientX - lastX) * k);
@@ -864,6 +915,10 @@ async function bootstrap() {
       lastY = e.clientY;
     });
     const endDrag = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        fingers = Math.max(0, fingers - 1);
+        if (dragId === e.pointerId) releaseTouchSpace();
+      }
       if (dragId !== e.pointerId) return;
       dragId = null;
       document.body.classList.remove('look-drag');
@@ -901,6 +956,23 @@ async function bootstrap() {
     if (p) choreographer.pause();
     else choreographer.startExperience();
   };
+  if (isMobile) {
+    // Landscape only for now: turning the phone upright pauses the song under the "rotate" card,
+    // and turning it back carries on (unless the player had paused it themself).
+    const portrait = window.matchMedia('(orientation: portrait)');
+    let pausedByRotation = false;
+    portrait.addEventListener('change', () => {
+      if (portrait.matches) {
+        if (latestSnap.playing && !userPaused) {
+          pausedByRotation = true;
+          setUserPaused(true);
+        }
+      } else if (pausedByRotation) {
+        pausedByRotation = false;
+        setUserPaused(false);
+      }
+    });
+  }
   {
     const ticks = timelineEl.querySelector('.ticks') as HTMLElement;
     for (const w of SHOT_WINDOWS.slice(1)) {
@@ -1005,7 +1077,8 @@ async function bootstrap() {
   window.addEventListener('resize', () => {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const newDpr = pickDpr();
+    // keep whatever the frame-rate guard has settled on (turning a phone must not undo it)
+    const newDpr = pickDpr() * renderScale;
     renderer.setPixelRatio(newDpr);
     renderer.setSize(w, h);
     cameraRig.resize(w / Math.max(1, h));
@@ -1125,6 +1198,19 @@ async function bootstrap() {
   let fastFrames = 0;
   let renderScale = 1.0;
   let pendingScale: number | null = null;
+  let guardDownLocked = false;
+  // ?fps=1: a small frame-rate and render-size readout in the top right corner, for testing on a phone
+  let fpsEl: HTMLElement | null = null;
+  let fpsTick = 0;
+  if (params.get('fps') === '1') {
+    fpsEl = document.createElement('div');
+    fpsEl.style.cssText =
+      'position:fixed;top:max(8px,env(safe-area-inset-top));right:max(10px,env(safe-area-inset-right));z-index:70;' +
+      'font:11px/1.3 ui-monospace,Menlo,monospace;color:rgba(240,212,172,.9);background:rgba(0,0,0,.45);' +
+      'padding:3px 7px;border-radius:5px;pointer-events:none;white-space:pre';
+    document.body.appendChild(fpsEl);
+  }
+  let dropCheck: { frames: number; msBefore: number; scaleBefore: number } | null = null;
   function animate(nowMs: number) {
     requestAnimationFrame(animate);
     const rawDt = (nowMs - lastMs) / 1000;
@@ -1142,16 +1228,33 @@ async function bootstrap() {
       postPipeline.resize(window.innerWidth, window.innerHeight, baseDpr * renderScale);
     }
     renderOneFrame(dt, false);
+    if (fpsEl && ++fpsTick % 20 === 0) {
+      fpsEl.textContent = `${fpsSmooth.toFixed(0)} fps  ${canvas.width}×${canvas.height}  ×${renderScale.toFixed(2)}${isMobile ? '  mobile' : ''}`;
+    }
 
     // Frame-rate guard: if the machine cannot hold 30 fps, render slightly fewer pixels rather than stutter.
     // (Skipped while the tab is hidden or right after a hitch, so one long frame never triggers it.)
     if (rawDt < 0.25 && !document.hidden && !(window as any).__noGuard) {
       frameMsEma = frameMsEma * 0.94 + rawDt * 1000 * 0.06;
-      slowFrames = frameMsEma > 31.5 ? slowFrames + 1 : 0;
+      slowFrames = frameMsEma > quality.slowFrameMs ? slowFrames + 1 : 0;
       fastFrames = frameMsEma < 19.0 ? fastFrames + 1 : 0;
       let next = renderScale;
-      if (slowFrames > 50 && renderScale > 0.62) next = Math.max(0.62, renderScale - 0.1);
-      else if (fastFrames > 600 && renderScale < 1.0) next = Math.min(1.0, renderScale + 0.1);
+      // A step down that bought nothing means pixels are not what holds the frame back (a phone in
+      // Low Power Mode is simply capped at 30 fps): take the step back and stop stepping down.
+      if (dropCheck && --dropCheck.frames <= 0) {
+        if (frameMsEma > dropCheck.msBefore - 1.0) {
+          next = dropCheck.scaleBefore;
+          guardDownLocked = true;
+        }
+        dropCheck = null;
+      }
+      const floor = quality.minRenderScale;
+      if (next !== renderScale) {
+        // reverting, decided above
+      } else if (!guardDownLocked && !dropCheck && slowFrames > 50 && renderScale > floor) {
+        next = Math.max(floor, renderScale - 0.1);
+        dropCheck = { frames: 150, msBefore: frameMsEma, scaleBefore: renderScale };
+      } else if (fastFrames > 600 && renderScale < 1.0) next = Math.min(1.0, renderScale + 0.1);
       if (next !== renderScale) {
         pendingScale = next;
         slowFrames = 0;

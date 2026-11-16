@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { quality } from './device';
 
 export interface PostPipelineState {
   feedbackStrength: number;
@@ -58,7 +59,7 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
     magFilter: THREE.LinearFilter,
     depthBuffer: true,
     stencilBuffer: false,
-    samples: 4,
+    samples: quality.msaaSamples,
   });
   sceneRT.depthTexture = new THREE.DepthTexture(effW, effH);
   sceneRT.depthTexture.type = THREE.UnsignedIntType;
@@ -306,9 +307,9 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
         float wsum = 1.0;
         const float GA = 2.39996323;
         float rot = fract(sin(dot(vUv, vec2(12.9898, 78.233))) * 43758.5453) * 6.2831853;
-        for (int i = 1; i <= 16; i++) {
+        for (int i = 1; i <= ${quality.dofTaps}; i++) {
           float fi = float(i);
-          float r = sqrt(fi / 16.0) * R;
+          float r = sqrt(fi / ${quality.dofTaps}.0) * R;
           vec2 o = vec2(cos(fi * GA + rot), sin(fi * GA + rot)) * r * uTexel;
           vec2 uv = clamp(vUv + o, 0.001, 0.999);
           vec3 c = sane(texture2D(tScene, uv).rgb);
@@ -632,11 +633,11 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
             float fall = exp(-dl * 3.1) * smoothstep(0.0, 0.05, dl);
             if (fall < 0.01) continue;
             vec3 acc = vec3(0.0);
-            for (int k = 0; k < 8; k++) {
-              float f = (float(k) + 0.25 + 0.5 * sj) / 8.0;
+            for (int k = 0; k < ${quality.shaftTaps}; k++) {
+              float f = (float(k) + 0.25 + 0.5 * sj) / ${quality.shaftTaps}.0;
               acc += texture2D(tBright, clamp(sampleUv + toL * f * 0.92, 0.002, 0.998)).rgb * (0.55 + 0.45 * f);
             }
-            shaftSum += acc * 0.125 * fall * g;
+            shaftSum += acc * (1.0 / ${quality.shaftTaps}.0) * fall * g;
           }
           hdrCol += shaftSum * vec3(0.30, 0.25, 0.20);
         }
@@ -652,8 +653,8 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
           float dj = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
           vec3 acc = vec3(0.0);
           float wsum = 0.0;
-          for (int k = 0; k < 30; k++) {
-            float f = (float(k) + dj) / 30.0;
+          for (int k = 0; k < ${quality.sweepTaps}; k++) {
+            float f = (float(k) + dj) / ${quality.sweepTaps}.0;
             // sample from this pixel toward the lamp, weighted toward the lamp's end
             vec2 uvk = clamp(sampleUv + toL * (0.10 + 0.90 * f), 0.002, 0.998);
             vec3 c = texture2D(tScene, uvk).rgb;

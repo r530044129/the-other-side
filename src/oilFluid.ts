@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { isMobile } from './device';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 
 const MAT_W = 1024;
@@ -110,7 +111,11 @@ export function createWymanThinFilmLUT(): THREE.DataTexture {
     data[(N + i) * 4 + 3] = 1;
   }
 
-  const tex = new THREE.DataTexture(data, N, 2, THREE.RGBAFormat, THREE.FloatType);
+  // Phone GPUs cannot filter 32-bit float textures (the lookup would read as black), so they get the same
+  // table in 16-bit floats, which is more than a colour ramp needs.
+  const tex = isMobile
+    ? new THREE.DataTexture(Uint16Array.from(data, (v) => THREE.DataUtils.toHalfFloat(v)), N, 2, THREE.RGBAFormat, THREE.HalfFloatType)
+    : new THREE.DataTexture(data, N, 2, THREE.RGBAFormat, THREE.FloatType);
   tex.minFilter = THREE.LinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.wrapS = THREE.ClampToEdgeWrapping;

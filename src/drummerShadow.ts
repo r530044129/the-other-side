@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { quality } from './device';
 
 export interface DrummerShadowState {
   presence: number;
@@ -557,7 +558,7 @@ export function createDrummerShadowSystem(): DrummerShadowHandles {
   }
 
   // Placement of the hidden rig in front of the projector (tunable from the console in dev builds).
-  const PLACE = { x: 0.30, y: 0.86, z: -2.25, rotY: -Math.PI * 0.49, scale: 1.52, blurSamples: 10 };
+  const PLACE = { x: 0.30, y: 0.86, z: -2.25, rotY: -Math.PI * 0.49, scale: 1.52, blurSamples: quality.shadowBlurSamples };
   if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) (globalThis as unknown as { __drummerPlace?: typeof PLACE }).__drummerPlace = PLACE;
 
   /** Pose the whole rig for song time `t`. Pure in `t` given the strike log. */
@@ -637,12 +638,12 @@ export function createDrummerShadowSystem(): DrummerShadowHandles {
     wrapT: THREE.ClampToEdgeWrapping,
     depthBuffer: true,
   } as const;
-  const shadowRT = new THREE.WebGLRenderTarget(1024, 1024, rtOpts);
+  const shadowRT = new THREE.WebGLRenderTarget(quality.shadowRes, quality.shadowRes, rtOpts);
   // Tape-delay echoes: the same drummer, a little late and a little later.
-  const echoRT1 = new THREE.WebGLRenderTarget(512, 512, rtOpts);
-  const echoRT2 = new THREE.WebGLRenderTarget(512, 512, rtOpts);
+  const echoRT1 = new THREE.WebGLRenderTarget(quality.shadowRes / 2, quality.shadowRes / 2, rtOpts);
+  const echoRT2 = new THREE.WebGLRenderTarget(quality.shadowRes / 2, quality.shadowRes / 2, rtOpts);
   // Scratch target for one shutter sub-frame.
-  const subRT = new THREE.WebGLRenderTarget(1024, 1024, rtOpts);
+  const subRT = new THREE.WebGLRenderTarget(quality.shadowRes, quality.shadowRes, rtOpts);
 
   // Accumulates sub-frames into a mask: a real shadow of a fast stick is a soft smear, not a crisp stick.
   const accumMat = new THREE.ShaderMaterial({

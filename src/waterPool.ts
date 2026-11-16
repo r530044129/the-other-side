@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { quality } from './device';
 import { BiolumDropSeed, BiolumInkField, MAX_UNDERWATER_PLUMES } from './inkField';
 import { OilTitleFluidSystem } from './oilFluid';
 import { XPBDWaterCarpet } from './waterCarpet';
@@ -140,7 +141,7 @@ export function createWaterPoolSystem(
   let waveRT1 = new THREE.WebGLRenderTarget(SIM_RES, SIM_RES, rtOptions);
 
   // Trilinear Mipmapped Planar Reflection & Refraction RTs -> buttery smooth, ZERO reflection staircase aliasing!
-  const reflRT = new THREE.WebGLRenderTarget(1024, 640, {
+  const reflRT = new THREE.WebGLRenderTarget(quality.waterRTSize?.[0] ?? 1024, quality.waterRTSize?.[1] ?? 640, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
     minFilter: THREE.LinearMipmapLinearFilter,
@@ -149,7 +150,7 @@ export function createWaterPoolSystem(
     depthBuffer: true,
   });
 
-  const refrRT = new THREE.WebGLRenderTarget(1280, 800, {
+  const refrRT = new THREE.WebGLRenderTarget(quality.waterRTSize?.[0] ?? 1280, quality.waterRTSize?.[1] ?? 800, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
     minFilter: THREE.LinearFilter,
@@ -2122,6 +2123,7 @@ export function createWaterPoolSystem(
   }
 
   function resize(width: number, height: number) {
+    if (quality.waterRTSize) return; // fixed size on a phone
     const rw = Math.max(640, Math.min(1400, Math.floor(width * 0.7)));
     const rh = Math.max(400, Math.min(880, Math.floor(height * 0.7)));
     reflRT.setSize(rw, rh);
