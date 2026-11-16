@@ -1,4 +1,5 @@
 import { createBakedSplash } from './bakedSplash';
+import { createSoundHint } from './soundHint';
 import * as THREE from 'three';
 import '@fontsource/cormorant-garamond/500.css';
 import '@fontsource/cormorant-garamond/500-italic.css';
@@ -84,8 +85,9 @@ const FOCUS_KEYS: [number, number, number, number, number][] = [
   [143.0, 0, 1.2, 0.0, 0.22],
   [146.0, 0, 1.0, 0.0, 0.16],
   [197.5, 0, 1.0, 0.0, 0.16],
-  [199.4, 0, 1.6, -2.4, 0.34],
-  [243.3, 0, 1.6, -2.4, 0.34],
+  // shot 6: focus on the middle of the water, so the swell in front is sharp and the stage only a little soft
+  [199.4, 0, 1.5, 1.8, 0.16],
+  [243.3, 0, 1.5, 1.8, 0.16],
   [254.5, 0, 2.06, 0.38, 0.85],
   [286.05, 0, 0.6, 0.38, 0.85],
 ];
@@ -234,6 +236,7 @@ async function bootstrap() {
   const dkAxis: [number, number, number] = [nave.axis.x, nave.axis.y, nave.axis.z];
 
   const drummerShadow = createDrummerShadowSystem();
+  const soundHint = createSoundHint();
   const splash = createBakedSplash();
   scene.add(splash.group);
   const postPipeline = createPostPipeline(window.innerWidth, window.innerHeight, dpr);
@@ -276,15 +279,11 @@ async function bootstrap() {
       (story.flipAge >= 0 ? 3.5 * Math.exp(-story.flipAge * 2.2) : 0) +
       (story.surfaceAge >= 0 ? 7.0 * Math.exp(-story.surfaceAge * 2.6) : 0);
 
-    // While the lens sits at the waterline after surfacing it rides the near edge of the sheet.
-    let rideY = 0;
-    {
-      const rideEnv = sstep(198.3, 198.7, snap.time) * (1.0 - sstep(199.8, 200.7, snap.time));
-      if (rideEnv > 0.001) {
-        const h = waterPool.carpet.heightAtWorld(0, 3.4) - 1.48 * 1.0;
-        rideY = Math.max(-0.3, Math.min(0.3, h)) * 0.7 * rideEnv;
-      }
-    }
+    // Shot 6: the lens is locked off, half in the water (no riding the swell, no drift, no mouse look).
+    // The water is held at the lens height around it instead (lensCalm below), so nothing a strike does to
+    // the water can move the picture or wash over the lens.
+    const rideY = 0;
+    const lockedOff = snap.time > 198.3 && snap.time < 243.3;
     // 1. Update Camera FIRST so sightline-locked effects use exact current frame eye position!
     if (snapCameraImmediately) {
       cameraRig.snapTo({
@@ -297,6 +296,7 @@ async function bootstrap() {
         fovPunch,
         band,
         rideY,
+        lockedOff,
       });
     } else {
       cameraRig.update(
@@ -310,6 +310,7 @@ async function bootstrap() {
           fovPunch,
           band,
           rideY,
+          lockedOff,
         },
         dt
       );
@@ -389,6 +390,17 @@ async function bootstrap() {
       rainbow: story.rainbow,
       underLift: story.underSpan,
       underSpan: story.underSpan,
+      // shot 6: the water reaches past the lens, so it has no near edge in the picture (grown while the lens
+      // is still at the surface, coming up)
+      // shot 6: the water reaches past the lens, so it meets the half-submerged lens with no edge of its own
+      carpetReach: 5.5 * sstep(198.6, 200.4, snap.time),
+      // the water around the locked-off lens stays at the lens height (the lens is at the rest height 1.48 m)
+      lensCalm: [0, 5.6, sstep(198.4, 199.2, snap.time) * (1.0 - sstep(242.5, 243.4, snap.time))],
+      // shot 6 only (the dive at 143 s keeps seeing the pool's top under its waterline, on purpose)
+      splitLine:
+        snap.time > 198.7 && snap.time < 243.3
+          ? [story.submergeLine, band, cameraRig.camera.aspect, snap.time]
+          : undefined,
       shadowPass: story.shadowPass,
       shadowSlide: story.shadowSlide,
       winPoster: story.winPoster,
@@ -425,6 +437,7 @@ async function bootstrap() {
       ambientKeep: snap.ambientKeep,
       shylightLights: activeLights,
       wallCausticIntensity: snap.wallCausticIntensity,
+      // under the lifted sheet the floor light stays a calm glow, not a field of bright blots
       poolFloorCausticIntensity: snap.poolFloorCausticIntensity,
       causticWaveTex: waterPool.getWaveTexture(),
       drummerShadowIntensity: snap.drummerPresence,
@@ -540,10 +553,24 @@ async function bootstrap() {
 
     // Baked crown splash on each drum strike (shot 6). It is hidden while the water draws its
     // refraction image, which the splash itself then reads to show the stage through the water.
+    // (the strike point follows the stick's shadow on the water and can land right under the lens; the
+    //  splash is kept at least 3 m out so it reads as a crown, not a wall of water on the glass)
+    let splashPos = latestDrummerTel.strikeWorldPos;
+    if (splashPos) {
+      const cam = cameraRig.camera.position;
+      const minAhead = 3.0;
+      if (cam.z - splashPos[2] < minAhead) splashPos = [splashPos[0], splashPos[1], cam.z - minAhead];
+    }
     splash.update({
       strikeAge: snap.timeSinceDrummerStrike,
-      strikePos: latestDrummerTel.strikeWorldPos,
-      waterY: latestDrummerTel.strikeWorldPos ? waterPool.carpet.heightAtWorld(latestDrummerTel.strikeWorldPos[0], latestDrummerTel.strikeWorldPos[2]) : waterPool.carpet.meanWaveHeight,
+      strikePos: splashPos,
+      // (with the lens half in the water the splash rises from the waterline drawn on the lens, never below it)
+      waterY: splashPos
+        ? Math.max(
+            waterPool.carpet.heightAtWorld(splashPos[0], splashPos[2]),
+            story.submergeLine > -0.2 && story.submergeLine < 1.2 ? cameraRig.camera.position.y - 0.05 : -99
+          )
+        : waterPool.carpet.meanWaveHeight,
       presence: snap.drummerPresence * (snap.carpetLevitation > 0.5 ? 1 : 0),
       refraction: waterPool.getRefractionTexture(),
       blackout: snap.endingBlackout,
@@ -620,6 +647,9 @@ async function bootstrap() {
       underGrade: story.underAmt,
     });
 
+    // Ask for sound: a few seconds after the music starts, and for as long as the page can see a problem
+    soundHint.update(snap.hasStarted && snap.playing, choreographer.soundIssue(), performance.now());
+
     // 9. Sync Whisper-Quiet Entrance / Prompt UI & [D] Debug Telemetry HUD
     if (snap.hasStarted && snap.time < snap.duration - 0.15) {
       startVeil.classList.add('awakened');
@@ -646,8 +676,9 @@ async function bootstrap() {
       if (spaceHintLabelEl.textContent !== h.label && h.label) spaceHintLabelEl.textContent = h.label;
       spaceHintEl.style.setProperty('--hint-bottom', `${hintBottom.toFixed(0)}px`);
       spaceHintEl.style.setProperty('--show', h.show.toFixed(3));
-      spaceHintEl.style.setProperty('--pulse', h.pulse.toFixed(3));
-      if (h.toBeat > 0 && h.toBeat < 1.05) {
+      // The key sits still: no beat glow and no closing frame (they pulled the eye away from the picture).
+      spaceHintEl.style.setProperty('--pulse', '0');
+      if (false && h.toBeat > 0 && h.toBeat < 1.05) {
         // a frame closes on the key and meets it on the beat, like the ring on the water
         const k = h.toBeat / 1.05;
         spaceHintEl.style.setProperty('--approach-sx', (1 + 0.5 * k).toFixed(3));

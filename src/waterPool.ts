@@ -41,6 +41,13 @@ export interface WaterSystemState {
   underView?: number;
   underLift?: number;
   underSpan?: number;
+  /** Waterline across a half-submerged lens: [line, band, aspect, time] exactly as given to the post pass;
+   *  line < -0.2 when the lens is not half in the water. */
+  splitLine?: [number, number, number, number];
+  /** See WaterCarpetWaveForces.lensCalm. */
+  lensCalm?: [number, number, number];
+  /** See WaterCarpetWaveForces.nearReach. */
+  carpetReach?: number;
   shadowPass?: number;
   shadowSlide?: number;
   winPoster?: number;
@@ -408,6 +415,8 @@ export function createWaterPoolSystem(
     uCarpetDims: { value: new THREE.Vector3(poolWidth, poolLength, poolCenterZ) },
     uCarpetWave: { value: new THREE.Vector4(0, 0, 1, 0) },
     uCarpetLift: { value: 0.0 },
+    uCarpetReach: { value: 0.0 },
+    uLensCalm: { value: new THREE.Vector3(0, 0, 0) },
     uCarpetStrikes: { value: Array.from({ length: 6 }, () => new THREE.Vector4(0, 0, 0, 0)) },
     uCarpetAnalyticN: { value: 1.0 },
     tVein: { value: veinTex as THREE.Texture },
@@ -422,6 +431,7 @@ export function createWaterPoolSystem(
     uReflComplement: { value: 0.0 },
     uReflShiver: { value: 0.0 },
     uUnderView: { value: 0.0 },
+    uSplit: { value: new THREE.Vector4(-1, 1, 1.78, 0) },
     uShadowPass: { value: 0.0 },
     uShadowSlide: { value: 0.0 },
     uWinPoster: { value: 0.0 },
@@ -587,6 +597,8 @@ export function createWaterPoolSystem(
       uniform vec3 uCarpetDims;      // grounded width, length, z centre
       uniform vec4 uCarpetWave;      // x = song time, y = wave activity, z = musical gain, w = under-span
       uniform float uCarpetLift;
+      uniform float uCarpetReach;
+      uniform vec3 uLensCalm;
       uniform vec4 uCarpetStrikes[6]; // uvX, uvY, age, strength
       uniform float uCarpetAnalyticN;
       uniform sampler2D tVein;
@@ -601,6 +613,7 @@ export function createWaterPoolSystem(
       uniform float uReflComplement;
       uniform float uReflShiver;
       uniform float uUnderView;
+      uniform vec4 uSplit;
       uniform float uShadowPass;
       uniform float uShadowSlide;
       uniform float uWinPoster;
@@ -853,8 +866,8 @@ export function createWaterPoolSystem(
         float t = uCarpetWave.x;
         float span = uCarpetWave.w;
         float W = mix(uCarpetDims.x, 16.0 + 8.0 * span, sl);
-        float L = mix(uCarpetDims.y, 9.6 + 7.4 * span, sl);
-        float Zc = mix(uCarpetDims.z, -1.2 - 1.3 * span, sl);
+        float L = mix(uCarpetDims.y, 9.6 + 7.4 * span + uCarpetReach, sl);
+        float Zc = mix(uCarpetDims.z, -1.2 - 1.3 * span + 0.5 * uCarpetReach, sl);
         float nx = (uv.x - 0.5) * 2.0;
         float nz = (0.5 - uv.y) * 2.0;
         float anx = abs(nx);
@@ -878,7 +891,7 @@ export function createWaterPoolSystem(
         float drape = cos(bx * 1.25 + bz * 0.80 + om * 1.55 * t) * 0.25;
         float climaxWave = sin(bx * 0.46 - bz * 0.38 + t * 2.05) * 0.44 + cos(bx * 0.88 + bz * 0.62 - t * 2.65) * 0.24;
         float edgeF = 0.35 * anx * anx + 0.65 * pow(anz, 1.8);
-        float hem = sin(bx * 1.08 + t * 2.55 + nz * 1.4) * edgeF * 0.34;
+        float hem = sin(bx * 1.08 + t * 2.55 + nz * 1.4) * edgeF * 0.34 / (1.0 + 0.4 * uCarpetReach);
         float wave = ((grand * 0.32 + diag * 0.20 + drape * 0.11 + hem) * uCarpetWave.z + climaxWave * climax * 0.85) * act;
 
         for (int i = 0; i < 6; i++) {
@@ -897,10 +910,29 @@ export function createWaterPoolSystem(
 
         float ox = -cos(bx * 0.56 + om * t) * (0.16 + 0.12 * climax) * act;
         float oz = sin(bz * 0.62 + t * 1.15) * 0.09 * act;
-        return vec3(bx + ox, baseY + wave, bz + oz);
+        // calm zone around a lens sitting in the water (copy of lensCalm in waterCarpet.ts)
+        float calm = 1.0 - uLensCalm.z * (1.0 - smoothstep(0.8, 5.0, length(vec2(bx, bz) - uLensCalm.xy)));
+        return vec3(bx + ox * calm, baseY + wave * calm, bz + oz * calm);
       }
 
       void main() {
+        // Lens half in the water (shot 6): below the waterline drawn on the lens the eye is under water, and
+        // from there the top of the surface cannot be seen. Without this the swell dipping below the lens
+        // showed its top as a second water surface under the line. Same formula as wlAt() in postPipeline.ts.
+        // (neither side of the sheet is drawn there: the lens only rides the swell approximately, so its
+        //  underside would otherwise cross under the line as a stray band; below the line is the floor)
+        if (uSplit.x > -0.2 && uSplit.x < 1.2) {
+          vec2 sp = vScreenPos.xy / max(0.001, vScreenPos.w) * 0.5 + 0.5;
+          float sxa = (sp.x - 0.5) * uSplit.z;
+          float st = uSplit.w;
+          float swl = 0.5 + (uSplit.x - 0.5) * uSplit.y
+                    + sxa * 0.026 * sin(st * 0.83)
+                    + 0.030 * sin(sxa * 1.7 + st * 1.3)
+                    + 0.007 * sin(sxa * 4.3 - st * 6.6 + 0.8 * sin(sxa * 1.1 + st))
+                    + 0.0022 * sin(sxa * 13.0 + st * 9.1)
+                    + 0.040 * sxa * sxa * uSplit.y;
+          if (sp.y < swl - 0.006) discard;
+        }
         // Map central stage [-8..+8] x [-8..+6] onto tWave UV [0..1] (when grounded) or carpet vUv (when airborne)
         vec2 stageWaveUv = mix(
           clamp(vec2(vWorldPos.x / 16.0 + 0.5, 0.5 - (vWorldPos.z + 1.0) / 14.0), 0.002, 0.998),
@@ -1509,13 +1541,17 @@ export function createWaterPoolSystem(
           // 2. Crystal-Dark Obsidian & Sapphire Liquid Glass Body (NEVER flat milky grey-teal!):
           // Deep Beer-Lambert sapphire-obsidian troughs let the golden floor caustics refract dimly through from below!
           float waveElev = clamp((vWorldPos.y - 1.48 * uCarpetLevitation) * 1.65, -1.0, 1.0);
-          vec3 deepObsidianGlass = vec3(0.0030, 0.0085, 0.0165) + vec3(0.005, 0.014, 0.024) * max(0.0, waveElev);
+          // (same water as the half-submerged lens in shot 5: a deep teal body, not a pale film)
+          vec3 deepObsidianGlass = vec3(0.004, 0.022, 0.030) * (0.7 + 0.6 * max(0.0, waveElev));
           // Beer-Lambert: path length through the sheet grows at grazing angles -> deep teal absorption,
           // so the carpet reads as a thick transmissive water body rather than a milky diffuse sheet.
-          float pathLen = 0.35 / max(0.18, clothNoV);
-          vec3 absorb = exp(-vec3(1.55, 0.62, 0.38) * pathLen);
+          // Once the sheet reaches past the lens (shot 6) it is a whole pool, not a thin sheet: looking down into
+          // it the light travels far, so the floor and its light curtains below sink into deep teal instead of
+          // showing through as a milky glow.
+          float pathLen = mix(0.9, 2.6, clamp(uCarpetReach / 5.5, 0.0, 1.0)) / max(0.14, clothNoV);
+          vec3 absorb = exp(-vec3(2.3, 1.0, 0.72) * pathLen);
           vec3 clearRefractedCaustics = refractedBg * absorb;
-          vec3 thickWaterBody = deepObsidianGlass + clearRefractedCaustics * 0.96;
+          vec3 thickWaterBody = deepObsidianGlass + clearRefractedCaustics * 0.55;
 
           // After we have been to the other side, every strike lets its cold light well up through the cloth.
           if (uTealLeak > 0.002 && uStrikeAge < 4.0) {
@@ -1547,11 +1583,18 @@ export function createWaterPoolSystem(
           vec3 stageWarmTint = mix(vec3(0.72, 0.84, 0.94), vec3(1.00, 0.72, 0.36), 0.45 + 0.48 * uDrummerShadow);
 
           // High-impact golden-champagne & aqua specular crest rings around drumstick strikes!
-          vec3 rippleImpactGold = (vec3(1.15, 0.80, 0.34) + vec3(0.22, 0.52, 0.72)) * pow(crestFactor, 1.6) * 1.55 * mix(0.05, 0.55, faceOn);
+          // Strike rings catch the stage light only along their thin crests. (This used the whole ripple slope
+          // and the 2D ripple field: after a few strikes the rings covered the sheet and painted it white.)
+          float ringLine = pow(clamp(ringCrestSum, 0.0, 1.0), 10.0);
+          vec3 rippleImpactGold = vec3(1.15, 0.84, 0.48) * ringLine * 0.45 * mix(0.15, 0.55, faceOn);
 
+          // The front key light shaped the old floating sheet. Once the water is a whole pool reaching past the
+          // lens (shot 6), the stage behind is its only light: the key's highlight would land just below the
+          // lens as a milky blot, so it goes; the light from the stage (back rim) stays.
+          float poolK = clamp(uCarpetReach / 5.5, 0.0, 1.0);
           vec3 airborneSpecs =
-            vec3(1.15, 0.90, 0.56) * specCrystal * 2.6 +
-            stageWarmTint * (specBroad * 0.10 + crestRidge * 0.025 + slopeFacing * 0.012) +
+            vec3(1.15, 0.90, 0.56) * specCrystal * 2.6 * (1.0 - poolK) +
+            stageWarmTint * (specBroad * 0.10 * (1.0 - poolK) + crestRidge * 0.025 + slopeFacing * 0.012 * (1.0 - 0.8 * poolK)) +
             mix(vec3(0.18, 0.28, 0.36), vec3(0.68, 0.44, 0.18), uDrummerShadow) * specBackRim * 0.85 +
             mix(vec3(0.26, 0.34, 0.40), vec3(0.55, 0.42, 0.24), uDrummerShadow) * meniscusLip * 0.42 +
             rippleImpactGold;
@@ -1575,15 +1618,31 @@ export function createWaterPoolSystem(
           }
 
           vec2 clothReflUV = clamp(vec2(screenUV.x, 1.0 - screenUV.y) + clothN.xz * 0.045 * mix(0.45, 1.0, faceOn) + totalGrad * 0.05 * rippleKeep, 0.002, 0.998);
-          vec3 clothRefl = texture2DLodEXT(tReflection, clothReflUV, mix(3.2, 0.5, faceOn)).rgb;
+          vec3 clothRefl = texture2DLodEXT(tReflection, clothReflUV, mix(1.2, 0.4, faceOn)).rgb;
           // water, not chrome: the mirror image loses red inside the sheet and never reaches full strength
           clothRefl *= vec3(0.62, 0.80, 0.86);
+          // The planar mirror shows what lies ahead (the stage) as if the water were flat. A swell face that
+          // turns toward the lens reflects the dark room behind the lens instead, so the mirror image is only
+          // kept where the reflected ray really travels on toward the stage. (Without this a swell seen from
+          // the waterline showed a grey copy of the backcloth all over its face and read as white cloth.)
+          vec3 clothR = reflect(-V, clothN);
+          clothRefl *= smoothstep(0.25, -0.35, clothR.z);
           // light from behind the stage bleeds through the thin crests
-          thickWaterBody += mix(vec3(0.012, 0.075, 0.085), vec3(0.11, 0.07, 0.022), uDrummerShadow) * crestRidge * (1.0 - faceOn) * 0.9;
+          thickWaterBody += mix(vec3(0.012, 0.075, 0.085), vec3(0.11, 0.07, 0.022), uDrummerShadow) * crestRidge * (1.0 - faceOn) * 0.35;
+
+          // Crest line: where the sheet turns edge-on to the lens it shows one thin bright line, as the
+          // waterline does in shot 5. It takes the colour of the stage light behind.
+          // The line lives on the silhouette itself and is a few pixels wide, measured on screen: wherever the
+          // view grazes the water (from the waterline that is most of the distant water) an angle-based band
+          // would cover whole swells and turn them white.
+          float rawNdv = dot(clothN, V);
+          float silW = max(2.2 * fwidth(rawNdv), 0.003);
+          float edgeOnLine = (1.0 - smoothstep(0.0, silW, abs(rawNdv))) * smoothstep(0.0, 0.35, crestRidge + 0.15);
+          vec3 crestLine = mix(vec3(0.70, 0.80, 0.82), vec3(1.0, 0.80, 0.55), uDrummerShadow) * edgeOnLine * 0.85;
 
           vec3 airborneCol =
-            thickWaterBody * (1.0 - clothFresnel * 0.48) * carpetShadow +
-            (clothRefl * (0.04 + 0.62 * clothFresnel) + airborneSpecs) * mix(1.0, 0.58, 1.0 - carpetShadow);
+            thickWaterBody * (1.0 - clothFresnel * 0.55) * carpetShadow +
+            (clothRefl * (0.03 + 0.30 * clothFresnel) + airborneSpecs + crestLine) * mix(1.0, 0.58, 1.0 - carpetShadow);
 
           // Smooth organic rounded silk-hem dissolve into refracted background (zero rectangular slab corners!)
           float featherAlpha = 1.0 - smoothstep(0.92, 0.995, orgEdge);
@@ -1873,6 +1932,11 @@ export function createWaterPoolSystem(
     waterUniforms.uReflComplement.value = state.reflComplement ?? 0;
     waterUniforms.uReflShiver.value = state.reflShiver ?? 0;
     waterUniforms.uUnderView.value = state.underView ?? 0;
+    {
+      const sl = state.splitLine;
+      if (sl) waterUniforms.uSplit.value.set(sl[0], sl[1], sl[2], sl[3]);
+      else waterUniforms.uSplit.value.set(-1, 1, 1.78, 0);
+    }
     waterUniforms.uShadowPass.value = state.shadowPass ?? 0;
     waterUniforms.uShadowSlide.value = state.shadowSlide ?? 0;
     waterUniforms.uWinPoster.value = state.winPoster ?? 0;
@@ -1944,6 +2008,11 @@ export function createWaterPoolSystem(
       state.underSpan ?? 0
     );
     waterUniforms.uCarpetLift.value = state.underLift ?? 0;
+    waterUniforms.uCarpetReach.value = state.carpetReach ?? 0;
+    {
+      const lc = state.lensCalm;
+      waterUniforms.uLensCalm.value.set(lc ? lc[0] : 0, lc ? lc[1] : 0, lc ? lc[2] : 0);
+    }
     waterUniforms.uCarpetAnalyticN.value = (window as any).__carpetVertexN ? 0.0 : 1.0;
     carpet.step(dt, {
       levitation: state.carpetLevitation,
@@ -1956,6 +2025,8 @@ export function createWaterPoolSystem(
       waveActivity: state.carpetWaveActivity,
       underLift: state.underLift ?? 0,
       underSpan: state.underSpan ?? 0,
+      nearReach: state.carpetReach ?? 0,
+      lensCalm: state.lensCalm,
     });
     carpet.writeStrikes(waterUniforms.uCarpetStrikes.value);
 

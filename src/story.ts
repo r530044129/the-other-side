@@ -154,8 +154,13 @@ export function computeStoryBase(t: number): StoryState {
     submergeLine =
       1.25 -
       0.72 * sstep(T_SURFACE - 0.18, T_SURFACE + 0.12, t) -
-      0.13 * sstep(T_SURFACE + 0.12, T_SURFACE + 1.5, t) -
-      0.65 * sstep(T_SURFACE + 1.5, T_SURFACE + 2.15, t);
+      // settles on the middle of the frame: the lens sits at the water's rest height looking level, so the
+      // real surface meets it exactly there
+      0.03 * sstep(T_SURFACE + 0.12, T_SURFACE + 1.5, t) -
+      // (held through shot 6: the lens stays half in the water until the shot ends)
+      // drains in the first 0.3 s of the lens rising out of the water (it would otherwise lag behind the real
+      // surface and show as a second line)
+      0.72 * sstep(242.5, 242.8, t);
   }
   // 'In rainbows' is sung twice under the water (152..169 and 179..197): colour arrives with the first
   // and is full with the second.

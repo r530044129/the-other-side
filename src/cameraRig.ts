@@ -7,6 +7,8 @@ export interface CameraRigState {
   pointerX: number;
   pointerY: number;
   lockMouse?: boolean;
+  /** Locked-off camera: no mouse look and no idle drift (shot 6, where the waterline is drawn on the lens). */
+  lockedOff?: boolean;
   /** Visual clock (stalls during the held breath) used for idle drift. */
   fxTime?: number;
   freeze?: number;
@@ -112,16 +114,19 @@ const CAM_KEYS: CamKey[] = [
   // up through the sheet on the first drum hit, then hold at its level for a second and a half
   // (the rig adds the local height of the sheet during the hold, so the lens stays just above it)
   { t: 198.3, pos: P_UNDER_C, tgt: lookFrom(P_UNDER_C, 31), fov: 64, ease: 'linear' },
-  { t: 198.6, pos: [0, 1.62, 5.4], tgt: [0, 1.5, -4.35], fov: 57, ease: 'inout3' },
-  { t: 200.0, pos: [0, 1.62, 5.4], tgt: [0, 1.5, -4.35], fov: 57, ease: 'linear' },
-  { t: 201.9, pos: [0, 2.36, 7.17], tgt: [0, 1.1, -4.35], fov: 57, ease: 'inout3' },
-  { t: 215.5, pos: [0, 2.34, 7.1], tgt: [0, 1.1, -4.35], fov: 57, ease: 'linear' },
+  // Shot 6 is one locked-off frame, the lens half in the water at the water's rest height (1.48 m): the
+  // stage above the line, the floor of the pool below it, only the water moving (as in the UE5 reference).
+  // It must not move, tilt or drift: the waterline is drawn on the lens at a fixed place in the frame, and
+  // the water around the lens is held at the lens height to meet it.
+  { t: 198.6, pos: [0, 1.48, 5.6], tgt: [0, 1.48, -4.35], fov: 57, ease: 'inout3' },
+  { t: 200.0, pos: [0, 1.48, 5.6], tgt: [0, 1.48, -4.35], fov: 57, ease: 'linear' },
+  // Shot 6 stays half in the water (as at the surfacing): air and the drummer's stage above the line,
+  // the floor of the pool below it. The rig keeps riding the local height of the sheet.
+  { t: 215.5, pos: [0, 1.48, 5.6], tgt: [0, 1.48, -4.35], fov: 57, ease: 'linear' },
   // bass returns: push in low on one side, then arc across the stage
   // (the three coloured shadows are giants now: the lens stays back and low and looks up at them, so
   //  they tower over the water from edge to edge instead of being cropped by a push-in)
-  { t: 221.0, pos: [-1.5, 2.05, 7.5], tgt: [0.4, 3.35, -4.35], fov: 55, ease: 'inout3' },
-  { t: 229.6, pos: [1.5, 2.1, 7.7], tgt: [-0.3, 3.35, -4.35], fov: 55 },
-  { t: 236.0, pos: [0, 2.4, 8.2], tgt: [0, 3.0, -4.35], fov: 59 },
+  { t: 242.5, pos: [0, 1.48, 5.6], tgt: [0, 1.48, -4.35], fov: 57, ease: 'linear' },
   { t: 243.3, pos: [0, 2.3, 7.05], tgt: [0, 1.1, -4.35], fov: 57 },
   // finale: far enough back that the great flower is whole in the picture from the moment it arrives
   { t: 254.5, pos: [0, 2.0, 7.5], tgt: [0, 1.5, -5.55], fov: 53 },
@@ -211,8 +216,8 @@ export class CinemaCameraRig {
   }
 
   snapTo(state: CameraRigState): CameraRigTelemetry {
-    this.smoothPointerX = state.lockMouse ? 0 : clamp(state.pointerX, -1, 1);
-    this.smoothPointerY = state.lockMouse ? 0 : clamp(state.pointerY, -1, 1);
+    this.smoothPointerX = state.lockMouse || state.lockedOff ? 0 : clamp(state.pointerX, -1, 1);
+    this.smoothPointerY = state.lockMouse || state.lockedOff ? 0 : clamp(state.pointerY, -1, 1);
     this.pointerVelX = 0;
     this.pointerVelY = 0;
     return this.update(state, 12.0);
@@ -225,7 +230,8 @@ export class CinemaCameraRig {
     //    surfacing 198.5); everything between is slow drift. The path is a pure function of time.
     const fx = state.fxTime ?? t;
     const pose = sampleCameraPath(t, state.band ?? 1);
-    const driftAmt = 1.0 - (state.freeze ?? 0);
+    // (no idle drift while the lens is locked off: shot 6)
+    const driftAmt = (1.0 - (state.freeze ?? 0)) * (state.lockedOff ? 0.0 : 1.0);
     const theatre = smoothstep(88.0, 94.0, t) * (1.0 - smoothstep(134.0, 141.0, t));
     const under = smoothstep(145.5, 150.0, t) * (1.0 - smoothstep(194.0, 197.6, t));
     const breathX = Math.sin(fx * 0.16) * 0.038 * driftAmt + theatre * Math.sin((fx - 88.0) * 0.105) * 0.85 + under * Math.sin(fx * 0.21) * 0.22;
@@ -241,8 +247,8 @@ export class CinemaCameraRig {
     this.currentFov = pose.fov + (state.fovPunch ?? 0);
 
     // 2. Halved Mouse-Look Range + Heavy Viscous Cinema Fluid-Head Inertia ("慢才会显得高级")
-    const targetPX = state.lockMouse ? 0 : clamp(state.pointerX, -1, 1);
-    const targetPY = state.lockMouse ? 0 : clamp(state.pointerY, -1, 1);
+    const targetPX = state.lockMouse || state.lockedOff ? 0 : clamp(state.pointerX, -1, 1);
+    const targetPY = state.lockMouse || state.lockedOff ? 0 : clamp(state.pointerY, -1, 1);
 
     if (dt >= 5.0) {
       this.smoothPointerX = targetPX;

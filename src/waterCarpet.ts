@@ -13,6 +13,13 @@ export interface WaterCarpetWaveForces {
   /** Seen from below: the cloth hovers higher and spreads wider so it becomes a ceiling. */
   underLift?: number;
   underSpan?: number;
+  /** Metres the sheet reaches further toward the camera (shot 6: its near edge goes behind the lens, so the
+   *  only edges left in the picture are the swells themselves). */
+  nearReach?: number;
+  /** A locked-off lens sitting half in the water (shot 6): around it the water is held at the lens height,
+   *  so the 3D surface meets the lens exactly where the waterline is drawn on it. Swells and strike waves
+   *  fade out toward the lens. [lens x, lens z, strength 0..1]. */
+  lensCalm?: [number, number, number];
 }
 
 export interface CarpetStrikeImpulse {
@@ -173,8 +180,9 @@ export class XPBDWaterCarpet {
     const sl = lev * lev * (3 - 2 * lev);
     const span = f.underSpan ?? 0;
     const w = this.width + (16.0 + 8.0 * span - this.width) * sl;
-    const l = this.length + (9.6 + 7.4 * span - this.length) * sl;
-    const zc = this.zCenter + (-1.2 - 1.3 * span - this.zCenter) * sl;
+    const reach = f.nearReach ?? 0;
+    const l = this.length + (9.6 + 7.4 * span + reach - this.length) * sl;
+    const zc = this.zCenter + (-1.2 - 1.3 * span + 0.5 * reach - this.zCenter) * sl;
     const u = Math.min(1, Math.max(0, x / w + 0.5));
     const v = Math.min(1, Math.max(0, 0.5 - (z - zc) / l));
     return this.sampleTargetCarpetField(u, v, f).targetY;
@@ -208,8 +216,9 @@ export class XPBDWaterCarpet {
     // Levitated: 16.0m wide x 9.6m deep centered at z = -1.2m (~94% of screen width!)
     const span = forces.underSpan ?? 0;
     const targetW = THREE.MathUtils.lerp(this.width, 16.0 + 8.0 * span, smoothLev);
-    const targetL = THREE.MathUtils.lerp(this.length, 9.6 + 7.4 * span, smoothLev);
-    const targetZCenter = THREE.MathUtils.lerp(this.zCenter, -1.2 - 1.3 * span, smoothLev);
+    const reach = forces.nearReach ?? 0;
+    const targetL = THREE.MathUtils.lerp(this.length, 9.6 + 7.4 * span + reach, smoothLev);
+    const targetZCenter = THREE.MathUtils.lerp(this.zCenter, -1.2 - 1.3 * span + 0.5 * reach, smoothLev);
 
     const nx = (u - 0.5) * 2.0; // -1..+1
     const nz = (0.5 - v) * 2.0; // -1 (back) .. +1 (front)
@@ -253,7 +262,8 @@ export class XPBDWaterCarpet {
 
     // Free-fluttering silk hem undulation along front & back edges
     const edgeFactor = 0.35 * Math.pow(Math.abs(nx), 2.0) + 0.65 * Math.pow(Math.abs(nz), 1.8);
-    const hemFlutter = Math.sin(baseX * 1.08 + t * 2.55 + nz * 1.4) * edgeFactor * 0.34;
+    // (the hem flutter belongs to a free edge; once the edge is behind the lens it would only ruffle the foreground)
+    const hemFlutter = (Math.sin(baseX * 1.08 + t * 2.55 + nz * 1.4) * edgeFactor * 0.34) / (1.0 + 0.4 * reach);
 
     const musicalGain = 0.92 + 0.45 * forces.otherEnergy + 0.32 * forces.vocalEnergy;
     let waveOffset =
@@ -285,10 +295,18 @@ export class XPBDWaterCarpet {
     const orbitalX = -Math.cos(baseX * 0.56 + omega * t) * (0.16 + 0.12 * climaxBoost) * act;
     const orbitalZ = Math.sin(baseZ * 0.62 + t * 1.15) * 0.09 * act;
 
+    // calm zone around a lens sitting in the water (see lensCalm)
+    let calm = 1.0;
+    const lc = forces.lensCalm;
+    if (lc && lc[2] > 0) {
+      const dl = Math.hypot(baseX - lc[0], baseZ - lc[1]);
+      calm = 1.0 - lc[2] * (1.0 - THREE.MathUtils.smoothstep(dl, 0.8, 5.0));
+    }
+
     const out = this.fieldOut;
-    out.targetX = baseX + orbitalX;
-    out.targetY = baseHoverY + waveOffset;
-    out.targetZ = baseZ + orbitalZ;
+    out.targetX = baseX + orbitalX * calm;
+    out.targetY = baseHoverY + waveOffset * calm;
+    out.targetZ = baseZ + orbitalZ * calm;
     return out;
   }
 

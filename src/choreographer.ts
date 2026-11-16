@@ -327,6 +327,30 @@ export class MusicChoreographer {
     this.audio = new Audio(import.meta.env.BASE_URL + 'audio/reckoner-full.m4a');
     this.audio.preload = 'auto';
     this.audio.loop = false;
+    this.audio.addEventListener('playing', () => {
+      this.playBlocked = false;
+    });
+  }
+
+  /** The browser refused to start the music (autoplay policy). Cleared when it plays. */
+  private playBlocked = false;
+
+  private startAudio(): void {
+    this.audio.play().catch(() => {
+      this.playBlocked = true;
+    });
+  }
+
+  /**
+   * Why the music may not be heard, as far as the page can tell. The system volume and mute switch are
+   * invisible to a web page; this only sees the page's own audio.
+   */
+  soundIssue(): 'blocked' | 'muted' | 'quiet' | null {
+    if (this.syntheticClockMode) return null;
+    if (this.playBlocked) return 'blocked';
+    if (this.audio.muted) return 'muted';
+    if (this.audio.volume < 0.1) return 'quiet';
+    return null;
   }
 
   async loadCues(): Promise<void> {
@@ -610,7 +634,7 @@ export class MusicChoreographer {
       this.audio.currentTime = this.manualTime;
       this.audio.playbackRate = this.playbackSpeed;
     } catch {}
-    this.audio.play().catch(() => {});
+    this.startAudio();
   }
 
   pause(): void {
@@ -720,7 +744,7 @@ export class MusicChoreographer {
     if (opts?.playing !== undefined) {
       if (opts.playing) {
         this.isPlaying = true;
-        if (!this.syntheticClockMode) this.audio.play().catch(() => {});
+        if (!this.syntheticClockMode) this.startAudio();
       } else {
         this.isPlaying = false;
         this.audio.pause();
@@ -1455,18 +1479,18 @@ export class MusicChoreographer {
         spaceHint.toBeat = this.isSpaceDown ? -1 : strongNext;
         spaceHint.pulse = 0.55 * surgeEnvelope(strongAge);
         spaceHint.mode = 'hold';
-        spaceHint.label = '按住 · 呼吸';
+        spaceHint.label = '长按';
       } else if (t > T_FLIP + 0.6 && t < 141.5) {
         spaceHint.show = fade(T_FLIP + 0.6, 141.5) * (this.skyPulseCount >= 2 ? 0.35 : 1.0);
         spaceHint.pulse = 0.5 + 0.5 * Math.sin(t * 1.1);
         spaceHint.mode = 'tap';
-        spaceHint.label = '轻点 · 吐息';
+        spaceHint.label = '轻点';
       } else if (t > 199.5 && t < 241.0) {
         spaceHint.show = fade(199.5, 241.0) * (this.strikeCounter >= 4 ? 0.35 : 1.0);
         spaceHint.toBeat = strongNext;
         spaceHint.pulse = surgeEnvelope(strongAge);
         spaceHint.mode = 'tap';
-        spaceHint.label = '轻点 · 击鼓';
+        spaceHint.label = '轻点';
       }
     }
 

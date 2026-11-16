@@ -31,7 +31,7 @@ interface Variant {
   fps: number;
 }
 
-const WORLD_SCALE = 0.85; // crown radius in metres at its peak
+const WORLD_SCALE = 0.55; // crown radius in metres at its peak (the lens sits at the waterline in shot 6, so near strikes read large)
 const PLAY_RATE = 1.0; // 1 = the slow-motion speed the bake was made for (40 frames at 24 fps = 1.67 s)
 
 export function createBakedSplash() {

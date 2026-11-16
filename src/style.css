@@ -30,8 +30,10 @@ body {
   inset: 0;
   z-index: 12;
   display: flex;
-  align-items: flex-end;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 18px;
   padding-bottom: 6.5vh;
   cursor: pointer;
   background: radial-gradient(circle at 50% 62%, rgba(0, 0, 0, 0.0) 0%, rgba(1, 1, 3, 0.28) 100%);
@@ -69,6 +71,89 @@ body {
   color: rgba(240, 212, 172, 0.86);
   text-transform: uppercase;
   text-shadow: 0 2px 14px rgba(0, 0, 0, 0.95);
+}
+
+/* "Headphones on, sound on": a quiet line under the entrance text, and a small pill once the music runs */
+.veil-sound {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 88vw;
+  padding: 7px 16px;
+  border: 1px solid rgba(232, 184, 118, 0.28);
+  border-radius: 999px;
+  background: rgba(8, 6, 4, 0.42);
+  color: rgba(244, 222, 188, 0.9);
+  font-size: 12.5px;
+  font-weight: 300;
+  letter-spacing: 0.14em;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.9);
+  opacity: 0.88;
+}
+.veil-sound svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: rgba(240, 200, 140, 0.95);
+}
+
+#sound-hint {
+  position: fixed;
+  top: calc(max(14px, (100vh - 100vw / 2.39) / 2 + 14px));
+  left: 50%;
+  transform: translate(-50%, -6px);
+  z-index: 13;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 90vw;
+  padding: 8px 10px 8px 16px;
+  border: 1px solid rgba(232, 184, 118, 0.34);
+  border-radius: 999px;
+  background: rgba(8, 6, 4, 0.62);
+  backdrop-filter: blur(6px);
+  color: rgba(246, 226, 194, 0.95);
+  font-size: 12.5px;
+  font-weight: 300;
+  letter-spacing: 0.12em;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.6s ease, transform 0.6s ease, visibility 0.6s ease;
+}
+#sound-hint.show {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translate(-50%, 0);
+}
+#sound-hint svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  color: rgba(240, 200, 140, 0.95);
+}
+#sound-hint button {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: rgba(246, 226, 194, 0.7);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+#sound-hint button:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+}
+@media (max-width: 560px) {
+  .veil-sound,
+  #sound-hint {
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+  }
 }
 
 /* Subtle Spacebar whisper prompt during Shot 2 & Shot 6 */
@@ -544,10 +629,9 @@ body.look-drag * {
   color: rgba(246, 222, 186, 0.92);
   text-shadow: 0 2px 12px rgba(0, 0, 0, 0.95);
 }
-#space-hint[data-mode="hold"] .key .fill { opacity: 1; animation: hint-fill 2.8s ease-in-out infinite; }
-#space-hint[data-mode="hold"]:not(.down) .key { animation: hint-hold-demo 2.8s ease-in-out infinite; }
+/* (the looping hold / tap demos are off: the hint rests quietly; only a real press changes the key) */
+#space-hint[data-mode="hold"] .key .fill { opacity: 1; width: 0; }
 #space-hint[data-mode="hold"].down .key .fill { animation: none; width: 100%; transition: width 1.4s ease-out; }
-#space-hint[data-mode="tap"]:not(.down) .key { animation: hint-tap-demo 1.7s ease-in-out infinite; }
 @keyframes hint-fill {
   0%, 8% { width: 0; }
   62%, 84% { width: 100%; }
