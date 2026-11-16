@@ -1,3 +1,4 @@
+import { createBakedSplash } from './bakedSplash';
 import * as THREE from 'three';
 import '@fontsource/cormorant-garamond/500.css';
 import '@fontsource/cormorant-garamond/500-italic.css';
@@ -53,9 +54,9 @@ declare global {
 
 // Per-shot exposure grade (keyed to the shot windows in choreographer.ts). Smooth, deterministic, music-timed.
 const EXPOSURE_KEYS: [number, number][] = [
-  [0.0, 1.55], [9.0, 1.55], [13.0, 1.34], [46.38, 1.34], [46.4, 1.30], [52.0, 1.22], [78.6, 1.20],
-  [85.7, 1.12], [90.0, 1.22], [143.2, 1.26], [146.0, 1.50], [196.0, 1.50], [199.4, 1.18], [243.3, 1.40], [255.0, 1.36],
-  [286.05, 1.45],
+  [0.0, 1.55], [9.0, 1.55], [13.0, 1.62], [46.38, 1.62], [46.4, 1.30], [52.0, 1.22], [78.6, 1.20],
+  [85.7, 1.12], [90.0, 1.22], [143.2, 1.26], [146.0, 1.50], [196.0, 1.50], [199.4, 1.18], [243.3, 1.40], [249.0, 0.92],
+  [286.05, 0.92],
 ];
 // Lens focus: a few keyed subjects, eased between; the distance is measured from the live camera.
 const FOCUS_KEYS: [number, number, number, number, number][] = [
@@ -63,13 +64,21 @@ const FOCUS_KEYS: [number, number, number, number, number][] = [
   [0.0, 0, 0.0, 0.0, 0.5],
   [7.2, 0, 0.0, 0.0, 0.5],
   // shot ②: focus rides on the hero flower B; the nave and its lamps fall soft
-  [11.4, -1.2, 1.3, 1.5, 0.62],
-  [46.38, -1.2, 1.3, 1.5, 0.62],
+  [11.4, -1.2, 1.3, 1.5, 0.36],
+  [46.38, -1.2, 1.3, 1.5, 0.36],
   [46.4, 0, 2.3, 0.3, 0.80],
-  [78.6, 0, 2.3, 0.3, 0.80],
+  [68.8, 0, 2.3, 0.3, 0.80],
+  // seen from straight above: flowers and water both held in focus
+  [71.0, 0, 1.0, -0.32, 0.28],
+  [77.0, 0, 1.0, -0.32, 0.28],
+  [80.2, 0, 2.3, 0.3, 0.80],
   [90.0, 0, 2.6, 0.0, 0.22],
   [100.0, 0, 2.6, 0.0, 0.22],
-  [105.0, 0, 7.0, -7.0, 0.12],
+  // the camera brushes past flower B: hold it sharp so the weave reads, the far flowers and the room go soft;
+  // then rack to the ceiling as the lens tilts up
+  [102.5, 0, 1.5, 0.85, 0.50],
+  [107.2, 0, 1.5, 0.85, 0.50],
+  [110.0, 0, 7.0, -7.0, 0.12],
   [129.0, 0, 7.0, -7.0, 0.12],
   [133.0, 0, 2.6, 0.0, 0.22],
   [143.0, 0, 1.2, 0.0, 0.22],
@@ -98,7 +107,7 @@ function sampleFocus(t: number): typeof focusTmp {
 }
 function focusDistAt(t: number, camPos: THREE.Vector3): number {
   const f = sampleFocus(t);
-  return Math.max(1.2, Math.hypot(camPos.x - f.x, camPos.y - f.y, camPos.z - f.z));
+  return Math.max(0.6, Math.hypot(camPos.x - f.x, camPos.y - f.y, camPos.z - f.z));
 }
 function apertureAt(t: number): number {
   return sampleFocus(t).a;
@@ -144,6 +153,7 @@ async function bootstrap() {
   veilTextEl.textContent = '正在载入 …';
   const debugPanelEl = document.getElementById('debug-panel')!;
   const spaceHintEl = document.getElementById('space-hint') as HTMLElement;
+  const spaceHintLabelEl = spaceHintEl.querySelector('.mode-label') as HTMLElement;
   const lyricEl = document.getElementById('lyric-line') as HTMLElement;
   const albumCardEl = document.getElementById('album-card') as HTMLElement;
   const timelineEl = document.getElementById('timeline') as HTMLElement;
@@ -185,7 +195,12 @@ async function bootstrap() {
     document.querySelectorAll<HTMLButtonElement>('#dbg-shot-buttons [data-shot]')
   );
 
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  // Internal resolution: never more than MAX_RENDER_W pixels across, whatever the screen. On a 4K or
+  // Retina display the picture is drawn at about 2560 wide and scaled up; grain and the soft lens hide
+  // the difference, and every full-screen pass costs half as much. (?maxw=3840 lifts the cap.)
+  const MAX_RENDER_W = Number(params.get('maxw')) || 2560;
+  const pickDpr = () => Math.min(window.devicePixelRatio || 1, 2, MAX_RENDER_W / Math.max(1, window.innerWidth));
+  const dpr = pickDpr();
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: true,
@@ -219,10 +234,12 @@ async function bootstrap() {
   const dkAxis: [number, number, number] = [nave.axis.x, nave.axis.y, nave.axis.z];
 
   const drummerShadow = createDrummerShadowSystem();
+  const splash = createBakedSplash();
+  scene.add(splash.group);
   const postPipeline = createPostPipeline(window.innerWidth, window.innerHeight, dpr);
   const choreographer = new MusicChoreographer();
 
-  await Promise.all([choreographer.loadCues(), shylights.ready]);
+  await Promise.all([choreographer.loadCues(), shylights.ready, splash.ready]);
   dbgScrubber.max = choreographer.duration.toFixed(2);
 
   // Normalized mouse pointer (-1..+1) for silky bounded camera parallax
@@ -303,6 +320,7 @@ async function bootstrap() {
       time: snap.time,
       causticBounce: snap.wallCausticIntensity,
       selfLit: s2.look,
+      silhouette: snap.flowerSilhouette,
       unitA: snap.shylightA,
       unitB: snap.shylightB,
       unitC: snap.shylightC,
@@ -373,6 +391,8 @@ async function bootstrap() {
       underSpan: story.underSpan,
       shadowPass: story.shadowPass,
       shadowSlide: story.shadowSlide,
+      winPoster: story.winPoster,
+      winSlide: story.winSlide,
       windowLight: story.windowLight,
       causticFractal: story.causticFractal,
       endTitle: story.endTitle,
@@ -394,6 +414,7 @@ async function bootstrap() {
       },
       cue: s2.cue,
       vein: { grow: s2.veinGrow, level: s2.veinLevel },
+      poolTop: snap.topDown,
     });
 
     // 6. Update Deep-Sea Misty Sky-Theater, Hanging Refracted Curtains, Pool Caustics & Rising Pearls
@@ -423,6 +444,7 @@ async function bootstrap() {
       drummerReveal: story.drummerReveal,
       triShadow: story.triShadow,
       triSpread: story.triSpread,
+      triGiant: story.triGiant,
       echoTextures: drummerShadow.echoTextures,
       dk: s2.look,
       dkAxis,
@@ -445,7 +467,7 @@ async function bootstrap() {
         0.62 * sstep(249.0, 256.0, t) * (1.0 - sstep(279.0, 283.5, t));
       presence = Math.min(1, presence);
       // seen from straight above the walls are only clutter: let them sink into the dark
-      presence *= 1.0 - 0.85 * sstep(69.0, 71.8, t) * (1.0 - sstep(75.4, 78.2, t));
+      presence *= 1.0 - 0.96 * sstep(68.6, 70.6, t) * (1.0 - sstep(77.0, 79.6, t));
       // shot ② has its own set (nave.ts); the slab room steps aside for it
       // The room is gone before the nave starts to appear. (Cross-fading them made the nearest arch
       // punch a hard-edged hole in the room the moment it became visible.)
@@ -482,7 +504,11 @@ async function bootstrap() {
         showAmt,
         ambientKeep: snap.ambientKeep,
         blackout: snap.endingBlackout,
-        level: 0.32 + 0.68 * sstep(9.0, 14.0, t),
+        // shot ③: the walls stand back so that the flowers' own light is what lights the picture
+        level: (0.32 + 0.68 * sstep(9.0, 14.0, t)) * (t >= 46.4 && t < 90 ? 0.42 : 1.0),
+        // from shot ③ on only five of the nineteen lamps are left; the finale has none
+        lampOthers: t < 46.4 ? 1 : 0,
+        lampKeep: t < 200 ? 1 : 0,
         lights: activeLights.map((l) => ({ x: l.pos.x, y: l.pos.y, z: l.pos.z, glow: l.glow })),
       });
     }
@@ -508,8 +534,22 @@ async function bootstrap() {
       drops: s2.drops,
       lights: activeLights.map((l) => ({ x: l.pos.x, y: l.pos.y, z: l.pos.z, glow: l.glow })),
       pxPerUnit: otherSide.risePx.value,
+      wallShadows: s2.wallShadows,
+      sweep: s2.sweep,
     });
 
+    // Baked crown splash on each drum strike (shot 6). It is hidden while the water draws its
+    // refraction image, which the splash itself then reads to show the stage through the water.
+    splash.update({
+      strikeAge: snap.timeSinceDrummerStrike,
+      strikePos: latestDrummerTel.strikeWorldPos,
+      waterY: latestDrummerTel.strikeWorldPos ? waterPool.carpet.heightAtWorld(latestDrummerTel.strikeWorldPos[0], latestDrummerTel.strikeWorldPos[2]) : waterPool.carpet.meanWaveHeight,
+      presence: snap.drummerPresence * (snap.carpetLevitation > 0.5 ? 1 : 0),
+      refraction: waterPool.getRefractionTexture(),
+      blackout: snap.endingBlackout,
+    });
+    const splashShown = splash.group.visible;
+    splash.group.visible = false;
     // 7. Render Planar Water Mirror Reflection & Airborne Carpet Background Caustic Refraction
     waterPool.renderPlanarAndRefraction(
       renderer,
@@ -524,7 +564,10 @@ async function bootstrap() {
         : undefined
     );
 
+    splash.group.visible = splashShown;
     // 8. Render HDR Main Scene + ACES Filmic / Analog Video Feedback Composite
+    // only the 2.39:1 picture is drawn; the black bars cost nothing
+    postPipeline.setBand(band);
     renderer.setRenderTarget(postPipeline.sceneRT);
     renderer.clear();
     waterPool.waterMesh.visible = !(window as any).__noWater;
@@ -544,7 +587,14 @@ async function bootstrap() {
         shaftScreen.push([shaftTmp.x * 0.5 + 0.5, shaftTmp.y * 0.5 + 0.5, Math.min(1.6, l.glow) * dry * inFront]);
       }
     }
+    // the travelling lamp of shot ②: where it is on screen, for the shadows it throws through the fog
+    let sweepShaft: [number, number, number] | undefined;
+    if (s2.sweep.level > 0.003 && s2.look > 0.01) {
+      shaftTmp.copy(nave.sweepWorld).project(cameraRig.camera);
+      if (shaftTmp.z < 1) sweepShaft = [shaftTmp.x * 0.5 + 0.5, shaftTmp.y * 0.5 + 0.5, s2.sweep.level * s2.look];
+    }
     postPipeline.renderFinal(renderer, {
+      sweepShaft,
       feedbackStrength: snap.feedbackStrength,
       breathStrength: snap.breathStrength,
       breathPhase: snap.time * 1.25,
@@ -566,7 +616,8 @@ async function bootstrap() {
       aspect: cameraRig.camera.aspect,
       shafts: shaftScreen,
       band,
-      edgeSoft: s2.look,
+      edgeSoft: s2.look * 0.4,
+      underGrade: story.underAmt,
     });
 
     // 9. Sync Whisper-Quiet Entrance / Prompt UI & [D] Debug Telemetry HUD
@@ -591,6 +642,8 @@ async function bootstrap() {
       timelineTimeEl.textContent = `${formatClock(snap.time)} / ${formatClock(snap.duration)}`;
       spaceHintEl.classList.toggle('down', snap.spaceHint.down);
       const h = snap.spaceHint;
+      spaceHintEl.dataset.mode = h.mode;
+      if (spaceHintLabelEl.textContent !== h.label && h.label) spaceHintLabelEl.textContent = h.label;
       spaceHintEl.style.setProperty('--hint-bottom', `${hintBottom.toFixed(0)}px`);
       spaceHintEl.style.setProperty('--show', h.show.toFixed(3));
       spaceHintEl.style.setProperty('--pulse', h.pulse.toFixed(3));
@@ -648,6 +701,7 @@ async function bootstrap() {
       playing: snap.playing,
       speed: snap.playbackRate,
       fps: Number(fpsSmooth.toFixed(1)),
+      renderPixels: [postPipeline.sceneRT.width, postPipeline.sceneRT.height],
       spaceHeld: snap.isSpaceHeld,
       stems: {
         drums: snap.drumsEnv,
@@ -920,7 +974,7 @@ async function bootstrap() {
   window.addEventListener('resize', () => {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const newDpr = Math.min(window.devicePixelRatio || 1, 2);
+    const newDpr = pickDpr();
     renderer.setPixelRatio(newDpr);
     renderer.setSize(w, h);
     cameraRig.resize(w / Math.max(1, h));
@@ -1051,7 +1105,7 @@ async function bootstrap() {
     if (pendingScale !== null) {
       renderScale = pendingScale;
       pendingScale = null;
-      const baseDpr = Math.min(window.devicePixelRatio || 1, 2);
+      const baseDpr = pickDpr();
       renderer.setPixelRatio(baseDpr * renderScale);
       renderer.setSize(window.innerWidth, window.innerHeight);
       postPipeline.resize(window.innerWidth, window.innerHeight, baseDpr * renderScale);
@@ -1060,7 +1114,7 @@ async function bootstrap() {
 
     // Frame-rate guard: if the machine cannot hold 30 fps, render slightly fewer pixels rather than stutter.
     // (Skipped while the tab is hidden or right after a hitch, so one long frame never triggers it.)
-    if (rawDt < 0.25 && !document.hidden) {
+    if (rawDt < 0.25 && !document.hidden && !(window as any).__noGuard) {
       frameMsEma = frameMsEma * 0.94 + rawDt * 1000 * 0.06;
       slowFrames = frameMsEma > 31.5 ? slowFrames + 1 : 0;
       fastFrames = frameMsEma < 19.0 ? fastFrames + 1 : 0;

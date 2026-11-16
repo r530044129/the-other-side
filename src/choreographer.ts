@@ -137,6 +137,10 @@ export interface Shot2State {
   drops: { x: number; y: number; z: number; a: number }[];
   /** The reflection of B runs a little late (automatic thread of 'the reflection misbehaves'). */
   mirrorB: ShylightUnitPose | null;
+  /** A lamp crossing the far bays behind the columns (nave-local metres) and its level 0..1. */
+  sweep: { x: number; y: number; z: number; level: number };
+  /** Flower shadows standing in the light the water throws on the wall (B, A, C). */
+  wallShadows: { x: number; hubY: number; z: number; open: number; scale: number; level: number }[];
 }
 
 export interface DebugEventLogEntry {
@@ -211,12 +215,16 @@ export interface ChoreographySnapshot {
   /** World XZ of the most recent strike (for the light that leaks up from the other side). */
   tealLeak: number;
   shot2: Shot2State;
+  /** 0..1: the lens looks straight down at the water (shot ③): only the flowers' pools of light are left. */
+  topDown: number;
+  /** 0..1: the flowers carry no light of their own and read as dark shapes against what is behind them. */
+  flowerSilhouette: number;
   /**
    * Space-key hint for the stretches where space does something: show 0..1 (dims once the player has
    * got it), toBeat = seconds until the next strong beat (or -1 when the stretch has no beat to hit),
    * pulse 0..1 on the beat.
    */
-  spaceHint: { show: number; toBeat: number; pulse: number; down: boolean };
+  spaceHint: { show: number; toBeat: number; pulse: number; down: boolean; mode: 'none' | 'hold' | 'tap'; label: string };
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -300,7 +308,7 @@ export class MusicChoreographer {
   private autoHolds: [number, number][] = [];
   /** From here the space key drives the breath; before it the piece breathes by itself. */
   private ctlStart = 28.0;
-  private ctlEnd = 73.0;
+  private ctlEnd = 76.0;
   private barSec = 2.303;
   /** Changes of the driving signal after ctlStart, so A and C can follow one and two bars later. */
   private holdLog: { t: number; h: boolean }[] = [];
@@ -870,7 +878,8 @@ export class MusicChoreographer {
     const shot1Dark = 1.0 - smoothstep(9.2, 13.5, t);
     // Per-shot ambient haze: each shot is lit by its own motivated lights (lamps, flowers, stage fan);
     // the generic grey haze between them is pulled down so the frame keeps true blacks.
-    const ambientKeep = keyCurve(t, [
+    const topDown = smoothstep(69.2, 71.0, t) * (1.0 - smoothstep(77.0, 78.8, t));
+    const ambientKeep = (1.0 - 0.8 * topDown) * keyCurve(t, [
       [0.0, 1.0], [12.0, 0.42], [46.4, 0.42], [50.0, 0.36], [78.6, 0.36], [84.0, 0.45],
       [143.8, 0.45], [150.0, 0.55], [197.8, 0.55], [203.0, 0.34], [243.3, 0.34], [249.0, 0.30], [286.05, 0.30],
     ]);
@@ -967,6 +976,8 @@ export class MusicChoreographer {
         this.fallbackUntil = t + clipDuration(CLIP_BLOOM) + 2.3;
       }
       heldNow = userHeld || t < this.fallbackUntil;
+      // seen from straight above the flowers always open, B first, A and C a bar and two bars later
+      if (t >= 69.6 && t < 75.6) heldNow = true;
     }
     if (t >= this.ctlStart) {
       const last = this.holdLog.length ? this.holdLog[this.holdLog.length - 1].h : false;
@@ -1113,7 +1124,7 @@ export class MusicChoreographer {
     // =========================================================================
     // SHOT 7 (4:03.3 ~ 4:46.05): Giant Pure Silk Flower Facing 100% Straight At Screen!
     // =========================================================================
-    const giantPresence = smoothstep(247.5, 254.0, t) * (1.0 - smoothstep(277.6, 280.6, t));
+    const giantPresence = smoothstep(245.2, 252.5, t) * (1.0 - smoothstep(277.6, 280.6, t));
     const codaWindDown = 1.0 - smoothstep(277.5, 285.2, t);
     const giantBreathWave = 0.5 + 0.5 * Math.sin((t - 257.5) * 0.55);
     // Creator: the flower heart faces the camera through the end. Mid-open petals read as a spiky star, so the
@@ -1170,7 +1181,8 @@ export class MusicChoreographer {
       story.worldFold = 0.0 * foldIn * reopen;
       story.foldSpin = story.fxTime * 0.16 + bb.barIndex * 0.83 + 0.10 * Math.exp(-beatAge * 6.0) * drumsEnv;
       story.rush = Math.min(1, story.rush * (0.7 + 0.5 * Math.exp(-beatAge * 4.0)));
-      story.triSpread = 0.055 + 0.05 * drumsEnv + 0.03 * Math.exp(-beatAge * 6.0);
+      // the three shadows stand further apart once they are giants
+      story.triSpread = (0.055 + 0.05 * drumsEnv + 0.03 * Math.exp(-beatAge * 6.0)) * (1.0 + 0.35 * story.triGiant);
     }
 
     // Shot 6, second chapter: the drummer plays the backbeat by himself when nobody is hitting,
@@ -1215,6 +1227,9 @@ export class MusicChoreographer {
     }
     // (The on-beat inner-light jump, glowKick, is removed: the inner light follows the breath only.)
     const flipGlow = t >= T_FLIP ? 1.1 * Math.exp(-(t - T_FLIP) * 1.1) : 0.0;
+    // Shot ④, first chapter: once the film of light is up behind them the three flowers go dark and stand
+    // against it as shapes; their own light comes back when the lens starts forward under them.
+    const silhouette4 = smoothstep(88.0, 91.0, t) * (1.0 - smoothstep(99.0, 102.0, t));
     const holdDim = 1.0 - 0.5 * story.windDown;
 
     // Finale: before the merge the mirrored flower breathes against the real one.
@@ -1270,7 +1285,8 @@ export class MusicChoreographer {
         bobOffsetMeters: 0,
         // the inner light is the breath: an ember while closed, full when open. It follows the fall
         // (about a second) rather than the ribs, which snap open in half that time.
-        glowIntensity: (0.40 + 0.92 * smoothstep(0.0, 1.0, breathDrop01(st))) * kindle(f === S2_FLOWERS.B ? 10.6 : f === S2_FLOWERS.A ? 11.2 : 11.5),
+        // (closed, the bud is nearly a silhouette against the lit air: the light is what the opening brings)
+        glowIntensity: (0.13 + 1.19 * smoothstep(0.0, 1.0, breathDrop01(st))) * kindle(f === S2_FLOWERS.B ? 10.6 : f === S2_FLOWERS.A ? 11.2 : 11.5),
         clip: breathClip(st),
         layout: { x: f.x, topY: f.topY, z: f.z, scale: f.scale, dropMeters: f.dropM, drop01: breathDrop01(st) },
         cable: 1,
@@ -1407,10 +1423,28 @@ export class MusicChoreographer {
       cue: { x: S2_FLOWERS.B.x, z: S2_FLOWERS.B.z, toLand: tCue - t, strength: 0 * (cueOn ? 1 : 0) },
       drops: s2Drops,
       mirrorB: s2Mirror,
+      // (the lamp that glided across the far end of the nave in the second half of the shot is removed:
+      //  2026-11-16, the user found a moving lamp there odd; level is held at 0)
+      sweep: {
+        x: -10.5 + 21.0 * smoothstep(28.5, 47.0, t) * 0.5 + 21.0 * 0.5 * clamp01((t - 28.5) / 18.5),
+        y: 2.5 + 0.25 * Math.sin((t - 28.5) * 0.35),
+        z: -35.0,
+        level: 0,
+      },
+      wallShadows: inS2
+        ? [{
+            x: S2_FLOWERS.B.x,
+            hubY: hB.hubY,
+            z: S2_FLOWERS.B.z,
+            open: hB.open,
+            scale: S2_FLOWERS.B.scale,
+            level: look * presB * smoothstep(12.5, 15.0, t) * (0.10 + 0.90 * smoothstep(0.0, 1.0, breathDrop01(this.breath.B))),
+          }]
+        : [],
     };
 
     // ---- space-key hint (shots ②, ④, ⑥) ----
-    const spaceHint = { show: 0, toBeat: -1, pulse: 0, down: this.isSpaceDown };
+    const spaceHint: ChoreographySnapshot['spaceHint'] = { show: 0, toBeat: -1, pulse: 0, down: this.isSpaceDown, mode: 'none', label: '' };
     if (this.hasStartedFlag) {
       const fade = (a: number, b: number) => smoothstep(a, a + 1.0, t) * (1.0 - smoothstep(b - 1.0, b, t));
       const strongNext = this.beatTimeAt(2 * Math.ceil(bp / 2)) - t;
@@ -1420,13 +1454,19 @@ export class MusicChoreographer {
         spaceHint.show = fade(this.ctlStart - 0.6, this.ctlEnd) * (this.userHolds >= 3 ? 0.45 : 1.0);
         spaceHint.toBeat = this.isSpaceDown ? -1 : strongNext;
         spaceHint.pulse = 0.55 * surgeEnvelope(strongAge);
+        spaceHint.mode = 'hold';
+        spaceHint.label = '按住 · 呼吸';
       } else if (t > T_FLIP + 0.6 && t < 141.5) {
         spaceHint.show = fade(T_FLIP + 0.6, 141.5) * (this.skyPulseCount >= 2 ? 0.35 : 1.0);
         spaceHint.pulse = 0.5 + 0.5 * Math.sin(t * 1.1);
+        spaceHint.mode = 'tap';
+        spaceHint.label = '轻点 · 吐息';
       } else if (t > 199.5 && t < 241.0) {
         spaceHint.show = fade(199.5, 241.0) * (this.strikeCounter >= 4 ? 0.35 : 1.0);
         spaceHint.toBeat = strongNext;
         spaceHint.pulse = surgeEnvelope(strongAge);
+        spaceHint.mode = 'tap';
+        spaceHint.label = '轻点 · 击鼓';
       }
     }
 
@@ -1469,7 +1509,7 @@ export class MusicChoreographer {
         // in the recap over the water carpet the flowers hang above the crests instead of standing in them
         // (they also draw upward during the wind-down before the bass)
         bobOffsetMeters: bobB + 1.25 * recapFlowers + 0.42 * story.windDown,
-        glowIntensity: (0.96 + 0.24 * openB + flipGlow) * holdDim,
+        glowIntensity: (0.96 + 0.24 * openB + flipGlow) * holdDim * (1.0 - 0.9 * silhouette4),
         clip: in3.B ? breathClip(this.breath.B) : undefined,
         // the trio hangs from cables in every shot it appears in, not only in shot ②
         cable: 1,
@@ -1479,7 +1519,7 @@ export class MusicChoreographer {
         presence: presA,
         openAmount: openA,
         bobOffsetMeters: bobA + 1.15 * recapFlowers + 0.34 * story.windDown,
-        glowIntensity: (0.90 + 0.22 * openA + flipGlow * 0.8) * holdDim,
+        glowIntensity: (0.90 + 0.22 * openA + flipGlow * 0.8) * holdDim * (1.0 - 0.9 * silhouette4),
         clip: in3.A ? breathClip(this.breath.A) : undefined,
         // the trio hangs from cables in every shot it appears in, not only in shot ②
         cable: 1,
@@ -1489,7 +1529,7 @@ export class MusicChoreographer {
         presence: presC,
         openAmount: openC,
         bobOffsetMeters: bobC + 1.15 * recapFlowers + 0.34 * story.windDown,
-        glowIntensity: (0.90 + 0.22 * openC + flipGlow * 0.8) * holdDim,
+        glowIntensity: (0.90 + 0.22 * openC + flipGlow * 0.8) * holdDim * (1.0 - 0.9 * silhouette4),
         clip: in3.C ? breathClip(this.breath.C) : undefined,
         // the trio hangs from cables in every shot it appears in, not only in shot ②
         cable: 1,
@@ -1526,6 +1566,8 @@ export class MusicChoreographer {
       drummerRigPresence,
       tealLeak,
       shot2,
+      topDown,
+      flowerSilhouette: silhouette4,
       spaceHint,
     };
   }

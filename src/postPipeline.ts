@@ -30,6 +30,10 @@ export interface PostPipelineState {
   band?: number;
   /** 0..1: the edges of the picture fall softly out of focus (shot ②). */
   edgeSoft?: number;
+  /** One strong light behind things (screen x, y, strength): its light streams past them through the fog. */
+  sweepShaft?: [number, number, number];
+  /** 0..1: the camera is under water — deep, contrasty teal instead of a bright milky veil. */
+  underGrade?: number;
 }
 
 export interface PostPipelineHandles {
@@ -37,6 +41,8 @@ export interface PostPipelineHandles {
   sceneRT: THREE.WebGLRenderTarget;
   renderFinal: (renderer: THREE.WebGLRenderer, state: PostPipelineState) => void;
   resize: (width: number, height: number, dpr: number) => void;
+  /** Restrict drawing to the letterboxed picture (band = its height as a fraction of the frame). */
+  setBand: (band: number) => void;
   resetFeedback: (renderer: THREE.WebGLRenderer) => void;
 }
 
@@ -382,8 +388,10 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
       uAspect: { value: 1.78 },
       tBright: { value: null as THREE.Texture | null },
       uShaft: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+      uSweep: { value: new THREE.Vector3() },
       uBand: { value: 1.0 },
       uEdgeSoft: { value: 0.0 },
+      uUnderGrade: { value: 0.0 },
       uTexel: { value: new THREE.Vector2(1 / 1280, 1 / 800) },
     },
     vertexShader: vert,
@@ -410,14 +418,28 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
       uniform float uAspect;
       uniform sampler2D tBright;
       uniform vec3 uShaft[4];
+      uniform vec3 uSweep;
       uniform float uBand;
       uniform float uEdgeSoft;
+      uniform float uUnderGrade;
       uniform vec2 uTexel;
 
       float hash12(vec2 p) {
         vec3 p3 = fract(vec3(p.xyx) * 0.1031);
         p3 += dot(p3, p3.yzx + 33.33);
         return fract((p3.x + p3.y) * p3.z);
+      }
+
+      // The waterline across a half-submerged lens, as a height on screen for a given x (aspect-scaled).
+      // From the measured UE5 reference: a 3–5 s swell, chop about once a second, a degree or two of roll;
+      // plus the bow a wide lens gives any line this close to it (the edges bend upward).
+      float wlAt(float xa) {
+        return 0.5 + (uSubmerge - 0.5) * uBand
+             + xa * 0.026 * sin(uTime * 0.83)
+             + 0.030 * sin(xa * 1.7 + uTime * 1.3)
+             + 0.007 * sin(xa * 4.3 - uTime * 6.6 + 0.8 * sin(xa * 1.1 + uTime))
+             + 0.0022 * sin(xa * 13.0 + uTime * 9.1)
+             + 0.040 * xa * xa * uBand;
       }
 
       // Exact Troy Sobotka / Blender / Three.js AgX Tone Mapping (Linear Rec.709 -> AgX Log -> Contrast Curve -> sRGB)
@@ -469,6 +491,7 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
       }
 
       void main() {
+        if (uBand < 0.999 && abs(vUv.y - 0.5) > 0.5 * uBand + 0.003) { gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
         vec2 centered = vUv - 0.5;
         float r2 = dot(centered, centered);
         float breathWarp = sin(uBreathPhase) * 0.0038 * uBreathStrength * (1.0 - r2);
@@ -480,23 +503,23 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
         float lineActive = step(-0.2, uSubmerge);
         float crossing = lineActive * step(uSubmerge, 1.2);
         float xa = (vUv.x - 0.5) * uAspect;
-        float wl = 0.5 + (uSubmerge - 0.5) * uBand
-                 + xa * 0.026 * sin(uTime * 0.83)                       // the camera rolls a degree or so
-                 + 0.015 * sin(xa * 2.3 + uTime * 1.9)                  // slow swell
-                 + 0.006 * sin(xa * 6.1 - uTime * 6.28)                 // chop, about once a second
-                 + 0.0025 * sin(xa * 17.0 + uTime * 9.1);
-        float thick = (0.011 + 0.008 * (0.5 + 0.5 * sin(xa * 3.7 - uTime * 2.3))) * (0.7 + 0.3 * uBand);
+        float wl = wlAt(xa);
+        // The meniscus is a lens of water a few per cent of the frame thick, fatter where the swell piles up.
+        float thick = (0.012 + 0.022 * pow(0.5 + 0.5 * sin(xa * 2.3 - uTime * 1.7 + 0.9 * sin(xa * 0.9 + uTime * 0.5)), 1.6)) * (0.7 + 0.3 * uBand);
         float dLine = vUv.y - wl;
-        float dN = dLine / thick;
-        float inBand = (1.0 - smoothstep(0.80, 1.0, abs(dN))) * crossing;
-        float bandMid = inBand * (1.0 - smoothstep(0.05, 0.45, dN));
-        float bandLip = inBand * smoothstep(0.10, 0.55, dN);
+        float dN = dLine / thick;                                   // +1 at its top edge, -1 at its foot
+        float inBand = (1.0 - smoothstep(0.85, 1.0, abs(dN))) * crossing;
+        // its body (everything under the bright rim) looks back down into the water: total reflection
+        float bandMid = inBand * (1.0 - smoothstep(0.55, 0.80, dN));
+        // a thin dark line just under the rim, where the curved water turns the view away from any light
+        float bandLip = crossing * exp(-((dN - 0.62) / 0.08) * ((dN - 0.62) / 0.08));
         float band = bandMid;
         float under = max(smoothstep(-thick + 0.003, -thick - 0.003, dLine) * lineActive, bandMid);
         sampleUv += under * vec2(sin(vUv.y * 13.0 + uTime * 1.25), cos(vUv.x * 10.0 + uTime * 1.05)) * 0.0024;
         // inside the band the picture is the water below it, mirrored and stretched (total reflection)
-        sampleUv.y = mix(sampleUv.y, wl - thick - (dLine + thick) * 3.2, bandMid);
-        sampleUv.x += bandMid * 0.010 * sin(xa * 23.0 + uTime * 5.0);
+        sampleUv.y = mix(sampleUv.y, wl - thick - (dLine + thick) * 2.6, bandMid);
+        sampleUv.x = mix(sampleUv.x, 0.5 + (sampleUv.x - 0.5) * 0.93, bandMid);
+        sampleUv.x += bandMid * 0.008 * sin(xa * 23.0 + uTime * 5.0);
         // just above the lip a film of water still runs off the glass
         sampleUv.y += crossing * 0.010 * exp(-max(dLine - thick, 0.0) / 0.018) * step(thick, dLine) * (0.6 + 0.4 * sin(xa * 31.0 + uTime * 3.0));
 
@@ -592,6 +615,9 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
         vec3 bloomCol = texture2D(tBloom, sampleUv).rgb;
         // wide chain: tight glow plus a faint warm halation skirt, as on film stock
         hdrCol += bloomCol * vec3(0.105, 0.092, 0.084);
+        // Halation: on film, strong highlights scatter back through the base and come up as a tight
+        // red-orange fringe around lamps and glints. (tBright is the scene's highlights at 1/8 size.)
+        hdrCol += texture2D(tBright, sampleUv).rgb * vec3(0.085, 0.026, 0.008);
 
         // Light shafts: haze between the lens and each lamp scatters its light, and anything standing in the
         // way (petals, sleeves, the cords) cuts dark fingers into it.
@@ -613,6 +639,34 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
             shaftSum += acc * 0.125 * fall * g;
           }
           hdrCol += shaftSum * vec3(0.30, 0.25, 0.20);
+        }
+
+        // The travelling lamp (shot ②): its light streams outward through the fog, and whatever stands
+        // between it and the lens (the branching columns, the arch feet, a hanging bud) leaves a dark
+        // finger in that light. As the lamp moves, the fingers swing across the picture and the water.
+        if (uSweep.z > 0.004) {
+          vec2 toL = uSweep.xy - sampleUv;
+          float dl = length(toL * vec2(uAspect, 1.0));
+          float reach = exp(-dl * 3.2);
+          // fixed (not animated) dither: hides the steps without adding crawl
+          float dj = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+          vec3 acc = vec3(0.0);
+          float wsum = 0.0;
+          for (int k = 0; k < 30; k++) {
+            float f = (float(k) + dj) / 30.0;
+            // sample from this pixel toward the lamp, weighted toward the lamp's end
+            vec2 uvk = clamp(sampleUv + toL * (0.10 + 0.90 * f), 0.002, 0.998);
+            vec3 c = texture2D(tScene, uvk).rgb;
+            float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+            // only the lamp's own lit fog is a source: light from anything else on the way is ignored
+            vec2 dq = (uvk - uSweep.xy) * vec2(uAspect, 1.0);
+            float nearLamp = exp(-dot(dq, dq) / 0.010);
+            float w = 0.35 + 0.65 * f;
+            acc += min(c, vec3(1.2)) * smoothstep(0.012, 0.070, lum) * nearLamp * w;
+            wsum += w;
+          }
+          acc /= wsum;
+          hdrCol += acc * reach * uSweep.z * vec3(1.05, 0.92, 0.78) * 1.0;
         }
 
         if (uFeedbackStrength > 0.001) {
@@ -639,25 +693,61 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
           uw *= 1.0 - smoothstep(0.18, 0.80, r2) * 0.38;
           hdrCol = mix(hdrCol, uw, under);
         }
-        // the band itself: bright where it looks at the underside of the surface, dark at the lip,
-        // one thin glint along the very top edge
-        hdrCol = hdrCol * (1.0 + 0.9 * bandMid) + vec3(0.030, 0.085, 0.095) * bandMid * (0.65 + 0.35 * sin(xa * 41.0 + uTime * 7.0));
-        hdrCol *= 1.0 - 0.80 * bandLip;
-        hdrCol += vec3(0.55, 0.78, 0.80) * 0.16 * crossing * exp(-((dN - 0.90) / 0.09) * ((dN - 0.90) / 0.09));
+        // The meniscus. Its top edge catches whatever light is above the water just over it (amber on the
+        // drummer's stage, cold under the night sky), flaring in short glints where the line tilts; its body
+        // glows near the rim and sinks to dim teal at its foot, with fine streaks running along it.
+        if (crossing > 0.001) {
+          vec2 aUv = vec2(vUv.x, clamp(wl + thick + 0.035, 0.002, 0.998));
+          vec3 aboveC = texture2D(tBright, aUv).rgb * 1.6 + texture2D(tScene, aUv).rgb;
+          float aL = dot(aboveC, vec3(0.2126, 0.7152, 0.0722));
+          vec3 keyTint = mix(vec3(1.0, 0.80, 0.55), clamp(aboveC / max(aL, 1e-3), 0.0, 2.5), 0.45);
+          float slope = (wlAt(xa + 0.02) - wlAt(xa - 0.02)) / 0.04;
+          float glint = 0.5 + 0.5 * sin(xa * 7.0 + uTime * 2.1 + slope * 9.0 + 1.3 * sin(xa * 2.3 - uTime * 0.7));
+          glint = 0.30 + 0.70 * glint * glint * glint;
+          float rimE = (0.18 + 2.6 * aL) * glint;
+          hdrCol *= 1.0 - 0.55 * bandLip;
+          float bodyLight = smoothstep(-1.0, 0.7, dN);
+          // (the water under it sets the hue low down; near the rim it takes the colour of the light above)
+          vec3 bodyCol = hdrCol * mix(vec3(0.50, 0.80, 0.88), vec3(0.85, 0.82, 0.78), bodyLight) * (0.35 + 1.3 * bodyLight * bodyLight)
+                       + keyTint * aL * 0.45 * bodyLight * bodyLight * bodyLight
+                       + vec3(0.006, 0.024, 0.028) * bodyLight;
+          hdrCol = mix(hdrCol, bodyCol, bandMid);
+          float streak = pow(0.5 + 0.5 * sin(dN * 9.0 + xa * 3.0 + 1.2 * sin(xa * 11.0 + uTime * 3.0)), 6.0);
+          hdrCol += keyTint * streak * bandMid * (0.02 + aL * 0.25);
+          hdrCol += keyTint * crossing * exp(-((dN - 0.86) / 0.10) * ((dN - 0.86) / 0.10)) * rimE;
+          // and a hair-thin second glint at the very top, where the film of water meets the glass
+          hdrCol += keyTint * crossing * exp(-((dN - 1.03) / 0.05) * ((dN - 1.03) / 0.05)) * rimE * 0.4;
+        }
         hdrCol *= 1.0 - min(0.3, dropShade);
         hdrCol *= 1.0 + dropGlint;
         hdrCol = hdrCol * (1.0 + 1.8 * uFlash) + uFlashTint * uFlash * 0.42;
 
         // Gentle cinema lens vignette (keeps atmospheric mist rich in center while grounding corners)
-        float vig = 1.0 - smoothstep(0.22, 0.88, r2) * 0.24;
+        // Under water, light is lost quickly: what is not lit directly falls to a deep blue-green, and only
+        // the surface glints and the shafts stay bright. (A power curve on the scene light: mid-tones drop,
+        // highlights keep their place.)
+        if (uUnderGrade > 0.002) {
+          vec3 deep = pow(max(hdrCol, vec3(0.0)), vec3(1.58, 1.50, 1.50)) * vec3(1.12, 1.20, 1.16);
+          hdrCol = mix(hdrCol, deep, uUnderGrade);
+        }
+        float vig = 1.0 - smoothstep(0.16, 0.86, r2) * 0.34;
         hdrCol *= uExposure * vig;
 
         vec3 mapped = agxToneMapping(hdrCol);
         vec3 srgb = linearToSRGB(mapped);
 
         // Fine 35mm organic film grain (eliminates 8-bit banding in deep volumetric sea mist!)
-        float grain = (hash12(gl_FragCoord.xy + fract(uTime * 7.13) * 137.0) - 0.5) * (2.2 / 255.0);
-        srgb = clamp(srgb + grain, 0.0, 1.0);
+        // Print look: a gentle S-curve (deeper blacks, a soft shoulder), cool shadows against warm highlights.
+        float pl = dot(srgb, vec3(0.2126, 0.7152, 0.0722));
+        srgb = mix(srgb, srgb * srgb * (3.0 - 2.0 * srgb), 0.42);
+        srgb += vec3(-0.010, 0.002, 0.014) * (1.0 - smoothstep(0.0, 0.40, pl)) * smoothstep(0.0, 0.06, pl)
+              + vec3(0.016, 0.005, -0.018) * smoothstep(0.45, 1.0, pl);
+        // 35mm grain: two sizes of clump, strongest in the mid-tones, nearly gone in pure black and in the
+        // lamps; it also hides banding and the upscale from the internal resolution.
+        vec2 gp = gl_FragCoord.xy + fract(uTime * vec2(7.13, 3.71)) * 137.0;
+        float grain = (hash12(gp) - 0.5) * 0.62 + (hash12(floor(gp * 0.5) + 31.7) - 0.5) * 0.38;
+        float gAmp = (2.0 + 9.0 * sqrt(clamp(pl, 0.0, 1.0)) * (1.0 - 0.55 * pl)) / 255.0;
+        srgb = clamp(srgb + grain * gAmp, 0.0, 1.0);
 
         // 2.39:1 picture: everything outside the band is black
         float bar = smoothstep(0.5 * uBand - 0.0012, 0.5 * uBand + 0.0012, abs(vUv.y - 0.5));
@@ -740,7 +830,12 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
     compositeMat.uniforms.tBright.value = bloomDown[2].texture;
     compositeMat.uniforms.uBand.value = state.band ?? 1.0;
     compositeMat.uniforms.uEdgeSoft.value = state.edgeSoft ?? 0.0;
+    compositeMat.uniforms.uUnderGrade.value = state.underGrade ?? 0.0;
     compositeMat.uniforms.uTexel.value.set(1.0 / dofRT.width, 1.0 / dofRT.height);
+    {
+      const sw = state.sweepShaft;
+      compositeMat.uniforms.uSweep.value.set(sw ? sw[0] : 0, sw ? sw[1] : 0, sw ? sw[2] : 0);
+    }
     for (let i = 0; i < 4; i++) {
       const sh = state.shafts?.[i];
       compositeMat.uniforms.uShaft.value[i].set(sh ? sh[0] : 0, sh ? sh[1] : 0, sh ? sh[2] : 0);
@@ -771,6 +866,20 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
     bloomBlurVMat.uniforms.uTexel.value.set(1.0 / bw, 1.0 / bh);
   }
 
+  function setBand(band: number) {
+    const on = band < 0.999;
+    for (const rt of [sceneRT, dofRT]) {
+      rt.scissorTest = on;
+      if (on) {
+        // a margin beyond the picture, so blur and bloom taps near its edge still find real pixels
+        const hh = Math.min(rt.height, Math.ceil(rt.height * (band + 0.06)));
+        rt.scissor.set(0, Math.floor((rt.height - hh) / 2), rt.width, hh);
+      } else {
+        rt.scissor.set(0, 0, rt.width, rt.height);
+      }
+    }
+  }
+
   function resetFeedback(renderer: THREE.WebGLRenderer) {
     const prev = renderer.getRenderTarget();
     renderer.setRenderTarget(fbRT0);
@@ -784,6 +893,7 @@ export function createPostPipeline(width: number, height: number, dpr: number): 
     sceneRT,
     renderFinal,
     resize,
+    setBand,
     resetFeedback,
   };
 }

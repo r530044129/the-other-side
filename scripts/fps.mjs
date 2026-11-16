@@ -14,10 +14,10 @@ const browser = await chromium.launch({
   args: ['--use-angle=metal', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-gpu-vsync', '--disable-frame-rate-limit', '--autoplay-policy=no-user-gesture-required'],
 });
 try {
-  const page = await (await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: Number(process.env.DPR ?? 1) })).newPage();
+  const page = await (await browser.newContext({ viewport: { width: Number(process.env.VW ?? 1440), height: Number(process.env.VH ?? 900) }, deviceScaleFactor: Number(process.env.DPR ?? 1) })).newPage();
   const errs = [];
   page.on('pageerror', (e) => errs.push(e.message));
-  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await page.goto(`http://127.0.0.1:${port}/?${process.env.QUERY ?? ''}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForFunction(() => Boolean(window.__tos && window.__tos.ready), { timeout: 90000 });
   await page.evaluate(() => document.getElementById('start-veil')?.classList.add('awakened'));
   if (process.env.FLAG) await page.evaluate((f) => { window[f] = true; }, process.env.FLAG);

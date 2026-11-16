@@ -38,6 +38,15 @@ export class BiolumInkField {
     () => new THREE.Vector4(0, 0, 0, 0)
   );
 
+  /** Per plume, for the baked ink volume: x, y = the two baked frames to blend, z = blend weight,
+   *  w = how far the cloud has been pulled back up through the surface (gravity flip, 0..1). */
+  readonly plumeFrame: THREE.Vector4[] = Array.from(
+    { length: MAX_UNDERWATER_PLUMES },
+    () => new THREE.Vector4(0, 0, 0, 0)
+  );
+  /** Simulation time of each baked frame (from ink_manifest.json); null until the bake has loaded. */
+  bakedTimes: number[] | null = null;
+
   liveDropCount = 0;
 
   updateAtTime(
@@ -93,6 +102,16 @@ export class BiolumInkField {
           (1.0 + 0.9 * THREE.MathUtils.smoothstep(realTime, 85.72, 86.1));
 
         this.plumePosRadius[i].set(wx, -sinkDepth, wz, d.radius);
+        // Baked cloud: the simulation runs 11.8 s; it is played slower than real time (the sim is fast
+        // early and slow late, so a constant stretch keeps that shape) and holds its last frame.
+        const bt = this.bakedTimes;
+        if (bt && bt.length > 1) {
+          const simT = Math.min(bt[bt.length - 1], age * (d.bloom ? 0.42 : 0.6));
+          let k = 0;
+          while (k < bt.length - 2 && simT > bt[k + 1]) k++;
+          const w = THREE.MathUtils.clamp((simT - bt[k]) / Math.max(1e-4, bt[k + 1] - bt[k]), 0, 1);
+          this.plumeFrame[i].set(k, k + 1, w, flipRise);
+        }
         this.plumeMeta[i].set(age, d.strength * lifeEnv * globalVisibility, d.seed, d.hueShift);
       } else {
         this.plumePosRadius[i].set(0, -20, 0, 0);

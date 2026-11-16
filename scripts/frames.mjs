@@ -36,10 +36,14 @@ try {
       if (flag && flag.startsWith('tap')) o.autoTap = true;
       if (flag && flag.startsWith('strike')) o.triggerDrumStrike = true;
       const wm = flag && flag.match(/w(\d+)$/); if (wm) o.warmupFrames = Number(wm[1]);
-      return window.__tos.seek(t, o);
+      const r = window.__tos.seek(t, o);
+      // 'strikeA0.6': strike, then let the piece run on for 0.6 s
+      const am = flag && flag.match(/A([0-9.]+)$/);
+      if (am) return window.__tos.stepSeconds(Number(am[1]), {});
+      return r;
     }, { t, flag });
     await page.waitForTimeout(60);
-    const f = path.join(OUT, `${name}_${ts}.jpg`);
+    const f = path.join(OUT, `${name}_${spec.replace(/[^0-9a-zA-Z.]+/g, "_")}.jpg`);
     await page.screenshot({ path: f, type: 'jpeg', quality: 82 });
     files.push(f);
   }

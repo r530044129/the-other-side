@@ -31,6 +31,9 @@ export interface RoomState {
   /** Overall light reaching the slabs (the title shot keeps them almost dark). */
   level: number;
   lights: { x: number; y: number; z: number; glow: number }[];
+  /** How much of the five lamps that stay is shown, and of the other fourteen (1 = all there). */
+  lampKeep?: number;
+  lampOthers?: number;
 }
 
 export interface RoomHandles {
@@ -315,6 +318,8 @@ export function createRoom(): RoomHandles {
     uBlackout: { value: 0 },
     uShowTint: { value: new THREE.Vector3() },
     uShowAmt: { value: 0 },
+    uKeepLv: { value: 1 },
+    uOtherLv: { value: 1 },
   };
   const lampMat = new THREE.ShaderMaterial({
     uniforms: lampUniforms,
@@ -322,13 +327,18 @@ export function createRoom(): RoomHandles {
     transparent: true,
     vertexShader: /* glsl */ `
       attribute float aSeed;
+      attribute float aKeep;
       varying vec3 vWorldPos;
       varying vec3 vNormalW;
       varying float vV;
       varying float vSeed;
       varying float vAng;
+      varying float vShown;
       uniform float uTime;
+      uniform float uKeepLv;
+      uniform float uOtherLv;
       void main() {
+        vShown = mix(uOtherLv, uKeepLv, aKeep);
         vec3 p = position;
         float ang = atan(p.z, p.x);
         // pleats, deeper toward the hem, breathing very slightly
@@ -352,6 +362,7 @@ export function createRoom(): RoomHandles {
       varying float vV;
       varying float vSeed;
       varying float vAng;
+      varying float vShown;
       uniform float uPresence;
       uniform float uWake;
       uniform float uBeat;
@@ -362,6 +373,7 @@ export function createRoom(): RoomHandles {
       uniform float uShowAmt;
       ${COMMON_GLSL}
       void main() {
+        if (vShown < 0.01) discard;
         vec3 N = normalize(vNormalW);
         vec3 V = normalize(cameraPosition - vWorldPos);
         float ndv = abs(dot(N, V));
@@ -385,11 +397,16 @@ export function createRoom(): RoomHandles {
         vec3 mistCol = vec3(0.020, 0.028, 0.038) * uAmbientKeep;
         col = mix(col, mistCol + col * 0.30, fog);
         col *= (1.0 - uBlackout);
-        gl_FragColor = vec4(col, smoothstep(0.0, 0.6, uPresence));
+        gl_FragColor = vec4(col, smoothstep(0.0, 0.6, uPresence) * vShown);
       }
     `,
   });
   const lamps = new THREE.InstancedMesh(lampGeo, lampMat, LAMPS);
+  // The five that stay when the room is thinned out (shot ③): an open V going back into the mist,
+  // its arms uneven, so the three flowers are framed and nothing sits in a row.
+  const KEEP = new Set([1, 5, 8, 11, 16]);
+  const keeps = new Float32Array(LAMPS);
+  const cordPtsOther: number[] = [];
   const dummy = new THREE.Object3D();
   const cordPts: number[] = [];
   for (let i = 0; i < LAMPS; i++) {
@@ -405,8 +422,17 @@ export function createRoom(): RoomHandles {
     lamps.setMatrixAt(i, dummy.matrix);
     // the swell wakes the centre first and spreads outward, row by row
     seeds[i] = 0.30 + 0.30 * (Math.abs(x0) / 12) + 0.14 * row + 0.05 * rand();
-    cordPts.push(x, y + 0.62 * sc, z, x, 30, z);
+    keeps[i] = KEEP.has(i) ? 1 : 0;
+    (KEEP.has(i) ? cordPts : cordPtsOther).push(x, y + 0.62 * sc, z, x, 30, z);
   }
+  lampGeo.setAttribute('aKeep', new THREE.InstancedBufferAttribute(keeps, 1));
+  const cordGeoOther = new THREE.BufferGeometry();
+  cordGeoOther.setAttribute('position', new THREE.Float32BufferAttribute(cordPtsOther, 3));
+  const cordMatOther = new THREE.LineBasicMaterial({ color: 0x1c1712, transparent: true, opacity: 0.0 });
+  const cordsOther = new THREE.LineSegments(cordGeoOther, cordMatOther);
+  cordsOther.frustumCulled = false;
+  cordsOther.renderOrder = -11;
+  group.add(cordsOther);
   const cordGeo = new THREE.BufferGeometry();
   cordGeo.setAttribute('position', new THREE.Float32BufferAttribute(cordPts, 3));
   const cordMat = new THREE.LineBasicMaterial({ color: 0x1c1712, transparent: true, opacity: 0.0 });
@@ -451,7 +477,16 @@ export function createRoom(): RoomHandles {
     lu.uBlackout.value = s.blackout;
     lu.uShowTint.value.set(s.showTint[0], s.showTint[1], s.showTint[2]);
     lu.uShowAmt.value = s.showAmt;
-    cordMat.opacity = 0.55 * Math.min(1, s.presence / 0.6) * (1 - s.blackout);
+    const keepLv = s.lampKeep ?? 1;
+    const otherLv = s.lampOthers ?? 1;
+    lu.uKeepLv.value = keepLv;
+    lu.uOtherLv.value = otherLv;
+    lamps.visible = keepLv > 0.01 || otherLv > 0.01;
+    const cordBase = 0.55 * Math.min(1, s.presence / 0.6) * (1 - s.blackout);
+    cordMat.opacity = cordBase * keepLv;
+    cords.visible = keepLv > 0.01;
+    cordMatOther.opacity = cordBase * otherLv;
+    cordsOther.visible = otherLv > 0.01;
   }
 
   return { group, update };

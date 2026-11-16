@@ -43,6 +43,8 @@ export interface WaterSystemState {
   underSpan?: number;
   shadowPass?: number;
   shadowSlide?: number;
+  winPoster?: number;
+  winSlide?: number;
   windowLight?: number;
   causticFractal?: number;
   endTitle?: number;
@@ -51,6 +53,8 @@ export interface WaterSystemState {
   strikeXZ?: [number, number];
   /** Shot ② Deakins look: black mirror, warm fog, long vertical reflections (0..1). */
   dk?: number;
+  /** 0..1: seen from straight above, the water is black except for the pool of light under each flower. */
+  poolTop?: number;
   dkAxis?: [number, number, number];
   dkTop?: number;
   /** Standing-wave pattern in the surface itself. */
@@ -75,6 +79,7 @@ export interface WaterPoolHandles {
   carpet: XPBDWaterCarpet;
   inkField: BiolumInkField;
   getWaveTexture: () => THREE.Texture;
+  getRefractionTexture: () => THREE.Texture;
   /** Injects a strictly music/interaction-driven ripple at world coordinates `(worldX, worldZ)` (or carpet UV when levitated) */
   injectWorldRipple: (
     worldX: number,
@@ -382,11 +387,16 @@ export function createWaterPoolSystem(
     uInkCount: { value: 0 },
     uPlumePos: { value: inkField.plumePosRadius },
     uPlumeMeta: { value: inkField.plumeMeta },
+    uPlumeFrame: { value: inkField.plumeFrame },
+    // Baked ink (Blender bake, 24 frames of a 96^3 cloud as 960x960 atlases, one layer per frame)
+    tInkBaked: { value: null as THREE.DataArrayTexture | null },
+    uInkBaked: { value: 0.0 },
     uBassStandingWave: { value: 0.0 },
     uCarpetLevitation: { value: 0.0 },
     uPackets: { value: packetUniformData },
     uPacketFx: { value: packetFxData },
     uDk: { value: 0.0 },
+    uPoolTop: { value: 0.0 },
     uDkAxis: { value: new THREE.Vector3(0, 0, -1) },
     uDkTop: { value: 1.0 },
     uPat: { value: new THREE.Vector4(0, 0, 0, 3) },
@@ -414,6 +424,9 @@ export function createWaterPoolSystem(
     uUnderView: { value: 0.0 },
     uShadowPass: { value: 0.0 },
     uShadowSlide: { value: 0.0 },
+    uWinPoster: { value: 0.0 },
+    uWinFig: { value: 2.9 },
+    uWinSlide: { value: 0.0 },
     uWindowLight: { value: 1.0 },
     uFractal: { value: 0.0 },
     uEndTitle: { value: 0.0 },
@@ -423,6 +436,54 @@ export function createWaterPoolSystem(
     uStrikeXZ: { value: new THREE.Vector2(0, -1.2) },
     uRealTime: { value: 0.0 },
   };
+
+  // Load the baked ink cloud in the background; until it is in, the procedural ink is drawn instead.
+  (async () => {
+    try {
+      const man = await (await fetch(import.meta.env.BASE_URL + 'baked/ink/ink_manifest.json')).json();
+      const N: number = man.grid * man.atlasCols;
+      const files: string[] = man.files;
+      const data = new Uint8Array(N * N * 2 * files.length);
+      const cv = document.createElement('canvas');
+      cv.width = N;
+      cv.height = N;
+      const ctx = cv.getContext('2d', { willReadFrequently: true })!;
+      await Promise.all(
+        files.map(async (f, layer) => {
+          const bmp = await createImageBitmap(await (await fetch(import.meta.env.BASE_URL + 'baked/ink/' + f)).blob(), {
+            colorSpaceConversion: 'none',
+            premultiplyAlpha: 'none',
+          });
+          return { bmp, layer };
+        })
+      ).then((list) => {
+        for (const { bmp, layer } of list) {
+          ctx.clearRect(0, 0, N, N);
+          ctx.drawImage(bmp, 0, 0);
+          const px = ctx.getImageData(0, 0, N, N).data;
+          const base = layer * N * N * 2;
+          for (let i = 0, j = 0; i < N * N; i++, j += 4) {
+            data[base + i * 2] = px[j];
+            data[base + i * 2 + 1] = px[j + 1];
+          }
+          bmp.close();
+        }
+      });
+      const tex = new THREE.DataArrayTexture(data, N, N, files.length);
+      tex.format = THREE.RGFormat;
+      tex.type = THREE.UnsignedByteType;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      tex.unpackAlignment = 2;
+      tex.needsUpdate = true;
+      waterUniforms.tInkBaked.value = tex;
+      inkField.bakedTimes = man.frameTimesSec;
+      waterUniforms.uInkBaked.value = 1.0;
+    } catch (e) {
+      console.warn('[ink] baked cloud not loaded, using procedural ink', e);
+    }
+  })();
 
   const waterMat = new THREE.ShaderMaterial({
     uniforms: waterUniforms,
@@ -480,11 +541,44 @@ export function createWaterPoolSystem(
       uniform int uInkCount;
       uniform vec4 uPlumePos[${MAX_UNDERWATER_PLUMES}];
       uniform vec4 uPlumeMeta[${MAX_UNDERWATER_PLUMES}];
+      uniform vec4 uPlumeFrame[${MAX_UNDERWATER_PLUMES}];
+      uniform highp sampler2DArray tInkBaked;
+      uniform float uInkBaked;
+
+      // ---- Baked ink (see public/baked/ink/ink_manifest.json) ----
+      // The cube is 96 slices stacked bottom to top; each slice is a 96x96 cell of a 10x10 atlas.
+      // R = sqrt(density), G = share of the second dye. c is a point in the cube, 0..1 on each axis
+      // (x, depth, height).
+      const float INK_EM_X = 0.5145;
+      const float INK_EM_D = 0.5387;
+      const float INK_EM_H = 0.8732;
+      const float INK_CUBE = 2.6;   // cube side in units of the plume radius
+      vec2 inkSliceAt(float k, vec2 xy, float layer) {
+        vec2 cell = vec2(mod(k, 10.0), floor(k / 10.0));
+        vec2 uv = (cell * 96.0 + clamp(xy * 96.0, vec2(0.5), vec2(95.5))) / 960.0;
+        return texture(tInkBaked, vec3(uv, layer)).rg;
+      }
+      vec2 inkBakedAt(vec3 c, float layer) {
+        float zs = clamp(c.z * 96.0 - 0.5, 0.0, 95.0);
+        float k0 = floor(zs);
+        return mix(inkSliceAt(k0, c.xy, layer), inkSliceAt(min(k0 + 1.0, 95.0), c.xy, layer), zs - k0);
+      }
+      // Where plume i's cube sits: the emitter just under the surface, turned by the plume's seed.
+      // Returns the cube coordinate of P (outside 0..1 when P is not in the cube).
+      vec3 inkCubeCoord(vec3 P, vec4 pl, vec4 mt, vec4 pf) {
+        float S = INK_CUBE * pl.w;
+        float a = mt.z * 1.7;
+        vec2 d = P.xz - pl.xz;
+        d = vec2(d.x * cos(a) - d.y * sin(a), d.x * sin(a) + d.y * cos(a));
+        float yTop = -0.015 + (1.0 - INK_EM_H) * S + pf.w * S;
+        return vec3(d.x / S + INK_EM_X, d.y / S + INK_EM_D, (P.y - (yTop - S)) / S);
+      }
       uniform float uBassStandingWave;
       uniform float uCarpetLevitation;
       uniform vec4 uPackets[${MAX_PACKETS}];
       uniform vec4 uPacketFx[${MAX_PACKETS}];
       uniform float uDk;
+      uniform float uPoolTop;
       uniform vec4 uPat;
       uniform vec4 uPatMode;
       uniform vec4 uCue;
@@ -509,6 +603,9 @@ export function createWaterPoolSystem(
       uniform float uUnderView;
       uniform float uShadowPass;
       uniform float uShadowSlide;
+      uniform float uWinPoster;
+      uniform float uWinFig;
+      uniform float uWinSlide;
       uniform float uWindowLight;
       uniform float uFractal;
       uniform float uEndTitle;
@@ -638,6 +735,28 @@ export function createWaterPoolSystem(
           if (i >= uInkCount) break;
           vec4 pl = uPlumePos[i]; // xyz = vortex head 3D center (y < 0), w = scale R
           vec4 mt = uPlumeMeta[i]; // x = age, y = strength, z = seed, w = hueShift
+          if (uInkBaked > 0.5) {
+            vec4 pf = uPlumeFrame[i];
+            vec3 c = inkCubeCoord(P, pl, mt, pf);
+            if (P.y > -0.015 || any(lessThan(c, vec3(0.0))) || any(greaterThan(c, vec3(1.0)))) continue;
+            vec2 a = mix(inkBakedAt(c, pf.x), inkBakedAt(c, pf.y), pf.z);
+            float dens = a.r * a.r * mt.y * 1.5;
+            if (dens > 0.006) {
+              // light comes down from the surface: ink lying above this point shades it
+              float lay = pf.z < 0.5 ? pf.x : pf.y;
+              float o1 = inkBakedAt(c + vec3(0.0, 0.0, 0.03), lay).r;
+              float o2 = inkBakedAt(c + vec3(0.0, 0.0, 0.08), lay).r;
+              float lit = exp(-(o1 * o1 * 2.2 + o2 * o2 * 1.6));
+              // the first dye is the warm core, the second the cold rim
+              vec3 litBiolum = underwaterThermalSpectrum(mix(0.95, 0.0, smoothstep(0.08, 0.65, a.g)), mt.w);
+              vec3 deepPrussianFold = vec3(0.006, 0.018, 0.055);
+              // shaded inner folds sink almost to black; the outer skin of each billow carries the light
+              vec3 inkColor = mix(deepPrussianFold, litBiolum * 1.9, lit * lit);
+              totalGlow += inkColor * dens;
+              totalDensity += dens * 1.35;
+            }
+            continue;
+          }
 
           float R = pl.w * (0.38 + 0.62 * (1.0 - exp(-mt.x / 2.6)));
           vec3 relHead = P - pl.xyz;
@@ -939,6 +1058,28 @@ export function createWaterPoolSystem(
         // Franklin's "oil on troubled waters": thick oil film slightly calms high-frequency ripples underneath it
         float oilCalm = 1.0 - 0.55 * clamp(oilSample.a * uTitlePresence, 0.0, 1.0);
         vec2 totalGrad = (pdeGrad + capGrad + deepSwellGrad) * oilCalm + oilGrad;
+        // Wind ripples on the lifted sheet (shots 5-6). The swell alone is smooth on the scale of metres,
+        // which is why the sheet read as foil or cloth; real water always carries a skin of short,
+        // crossing ripples, and it is those that break reflections into glints and the underside into a
+        // net of light. Five wave trains, each bent by a slower one so no two crests run parallel.
+        if (uCarpetLevitation > 0.002) {
+          vec2 rp = vWorldPos.xz;
+          vec2 rd = vec2(0.8, 0.6);
+          float rf = 2.6;
+          float ra = 0.050;
+          vec2 rg = vec2(0.0);
+          for (int i = 0; i < 5; i++) {
+            float fi = float(i);
+            float ph = dot(rp, rd) * rf + uTime * (0.9 + 0.33 * fi) + 1.9 * sin(dot(rp, rd.yx) * rf * 0.31 + fi * 2.1 + uTime * 0.17);
+            rg += rd * (ra * cos(ph));
+            rd = mat2(0.62, -0.785, 0.785, 0.62) * rd;
+            rf *= 1.83;
+            ra *= 0.72;
+          }
+          // (they fade with distance: beyond a few metres they are smaller than a pixel and would only shimmer)
+          float rKeep = 1.0 - smoothstep(6.0, 22.0, length(vWorldPos - cameraPosition));
+          totalGrad += rg * rKeep * uCarpetLevitation;
+        }
 
         // The lifted sheet: its normal is worked out here, per pixel, from the same swell formula that
         // places the vertices. Normals carried by the vertices are only linear inside each 20 cm cell, and
@@ -1089,6 +1230,13 @@ export function createWaterPoolSystem(
             float bR = bpl.w * (0.38 + 0.62 * (1.0 - exp(-bmt.x / 2.6)));
             vec3 bMin = vec3(bpl.x - bR * 2.05, bpl.y - bR * 1.45, bpl.z - bR * 2.05);
             vec3 bMax = vec3(bpl.x + bR * 2.05, -0.015, bpl.z + bR * 2.05);
+            if (uInkBaked > 0.5) {
+              // the baked cube, turned by its seed: bound it by the circle it can sweep
+              float S = INK_CUBE * bpl.w;
+              float yTop = -0.015 + (1.0 - INK_EM_H) * S + uPlumeFrame[i].w * S;
+              bMin = vec3(bpl.x - S * 0.73, yTop - S, bpl.z - S * 0.73);
+              bMax = vec3(bpl.x + S * 0.73, min(yTop, -0.015), bpl.z + S * 0.73);
+            }
             vec3 tA = (bMin - vWorldPos) * invRay;
             vec3 tB = (bMax - vWorldPos) * invRay;
             vec3 tN = min(tA, tB);
@@ -1196,6 +1344,10 @@ export function createWaterPoolSystem(
           planarRefl = mix(planarRefl, comp, uReflComplement);
         }
 
+        // Dark water is not a perfect mirror: the image it throws back is dimmer than the thing itself and a
+        // little warmer (the surface film takes the blue first), so a lamp's reflection reads as a gold
+        // streak under it rather than as a second, whiter lamp.
+        planarRefl *= vec3(0.80, 0.66, 0.50);
         // Combine Deep Refracted Underwater Volume (1 - fresnel) + Crisp Mirror Reflection!
         vec3 waterCol = underwaterVolumeCol * (1.0 - fresnel) + planarRefl * (0.42 + 0.65 * fresnel);
 
@@ -1221,6 +1373,8 @@ export function createWaterPoolSystem(
         // (the drawn cyan ring where each ink drop entered is gone; the entry is a real ripple only)
         waterCol += vec3(0.28, 0.65, 0.85) * inkSurfaceEntryRing * 0.0;
 
+        // seen from straight above, everything that is not a flower's own light on the water steps back
+        waterCol *= 1.0 - 0.78 * uPoolTop;
         for (int i = 0; i < 4; i++) {
           float g = uLights[i].w;
           if (g <= 0.004) continue;
@@ -1241,7 +1395,8 @@ export function createWaterPoolSystem(
           waterCol += glintCol * g * atten * (ggxTight * 1.45 + ggxSoft * (0.12 + crestFactor * 0.48));
           // the closing ring always carries a little of the flower's light, even while the flower is only an ember
           waterCol += glintCol * max(g, 0.55) * atten * cueSheen * (0.55 + 1.5 * ggxSoft);
-          if (uDk > 0.002) {
+          float poolK = max(uDk, uPoolTop);
+          if (poolK > 0.002) {
             // Pool of light at the foot of the flower: tight and bright when it hangs low, wide and faint
             // when it is high. Slopes that face the flower catch more of it, which is what draws the rings.
             vec2 toL = lPos.xz - vWorldPos.xz;
@@ -1249,6 +1404,8 @@ export function createWaterPoolSystem(
             float pool = min(5.0, g * hL / pow(hL * hL + dHoriz * dHoriz, 1.5));
             float facing = clamp(0.5 + dot(totalGrad, toL / max(dHoriz, 0.08)) * 2.4, 0.0, 1.7);
             waterCol += glintCol * pool * 0.085 * (0.22 + facing) * uDk;
+            // from above the pool is seen whole: a disc that is brightest under the flower and falls off softly
+            waterCol += vec3(0.50, 0.31, 0.13) * pool * 0.34 * (0.55 + 0.45 * facing) * uPoolTop * (1.0 - uDk);
           }
         }
 
@@ -1440,8 +1597,11 @@ export function createWaterPoolSystem(
           // outside it the surface is a total-internal-reflection mirror of the world below.
           // ===================================================================
           if (!gl_FrontFacing && uUnderView > 0.5) {
-            vec3 nDown = normalize(mix(vec3(0.0, -1.0, 0.0), clothN, 0.55));
+            // (for the look straight up the window is drawn tighter and its edge follows the swell less, so
+            //  that it fits the picture as one whole disc)
+            vec3 nDown = normalize(mix(vec3(0.0, -1.0, 0.0), clothN, mix(0.55, 0.20, uWinPoster)));
             float cosI = clamp(dot(nDown, V), 0.0, 1.0);
+            cosI = 1.0 - (1.0 - cosI) * mix(1.0, 2.35, uWinPoster);
             // each wavelength has a slightly different critical angle -> a thin spectral fringe on the rim
             // (with uRainbow the colours part further at the rim: red sees a slightly wider window than blue)
             float rb = 0.010 * uRainbow;
@@ -1466,13 +1626,21 @@ export function createWaterPoolSystem(
               // window-space projection: the figure towers over the disc of light above the camera
               vec2 sUv = vec2((vWorldPos.x - cameraPosition.x) / 2.6 + 0.5 + uShadowSlide * 1.5 + clothN.x * 0.05,
                               (vWorldPos.z - cameraPosition.z + 1.05) / 2.6 + 0.70 + clothN.z * 0.05);
-              if (sUv.x > 0.03 && sUv.x < 0.97 && sUv.y > 0.03 && sUv.y < 0.97) {
-                float px = 0.007;
-                occ = texture2D(uDrummerTex, sUv).a * 0.28
-                    + texture2D(uDrummerTex, sUv + vec2(px, px)).a * 0.18
-                    + texture2D(uDrummerTex, sUv - vec2(px, px)).a * 0.18
-                    + texture2D(uDrummerTex, sUv + vec2(-px, px)).a * 0.18
-                    + texture2D(uDrummerTex, sUv + vec2(px, -px)).a * 0.18;
+              // looking straight up: the whole figure, sized to the disc, walks in from the side
+              vec2 pUv = vec2((vWorldPos.x - cameraPosition.x) / uWinFig + 0.5 + uWinSlide * 0.95 + clothN.x * 0.03,
+                              (vWorldPos.z - cameraPosition.z) / uWinFig + 0.5 + clothN.z * 0.03);
+              // (both placements are read and cross-faded, so the figure never jumps between them)
+              for (int m = 0; m < 2; m++) {
+                vec2 fUv = m == 0 ? sUv : pUv;
+                float wgt = m == 0 ? 1.0 - uWinPoster : uWinPoster;
+                if (wgt > 0.003 && fUv.x > 0.03 && fUv.x < 0.97 && fUv.y > 0.03 && fUv.y < 0.97) {
+                  float px = 0.007;
+                  occ += wgt * (texture2D(uDrummerTex, fUv).a * 0.28
+                      + texture2D(uDrummerTex, fUv + vec2(px, px)).a * 0.18
+                      + texture2D(uDrummerTex, fUv - vec2(px, px)).a * 0.18
+                      + texture2D(uDrummerTex, fUv + vec2(-px, px)).a * 0.18
+                      + texture2D(uDrummerTex, fUv + vec2(px, -px)).a * 0.18);
+                }
               }
             }
             vec3 windowCol = (skyLight * uWindowLight + above * vec3(0.30, 0.34, 0.36)) * mix(1.0, 0.07, occ * uShadowPass);
@@ -1707,6 +1875,8 @@ export function createWaterPoolSystem(
     waterUniforms.uUnderView.value = state.underView ?? 0;
     waterUniforms.uShadowPass.value = state.shadowPass ?? 0;
     waterUniforms.uShadowSlide.value = state.shadowSlide ?? 0;
+    waterUniforms.uWinPoster.value = state.winPoster ?? 0;
+    waterUniforms.uWinSlide.value = state.winSlide ?? 0;
     waterUniforms.uWindowLight.value = state.windowLight ?? 1;
     waterUniforms.uFractal.value = state.causticFractal ?? 0;
     waterUniforms.uEndTitle.value = state.endTitle ?? 0;
@@ -1723,6 +1893,7 @@ export function createWaterPoolSystem(
     waterUniforms.uShot1Dark.value = state.shot1Dark ?? 0.0;
     waterUniforms.uAmbientKeep.value = state.ambientKeep ?? 1.0;
     waterUniforms.uDk.value = state.dk ?? 0.0;
+    waterUniforms.uPoolTop.value = state.poolTop ?? 0.0;
     if (state.dkAxis) waterUniforms.uDkAxis.value.set(state.dkAxis[0], state.dkAxis[1], state.dkAxis[2]);
     waterUniforms.uDkTop.value = state.dkTop ?? 1.0;
     if (state.pat) {
@@ -1891,6 +2062,7 @@ export function createWaterPoolSystem(
     carpet,
     inkField,
     getWaveTexture: () => waveRT0.texture,
+    getRefractionTexture: () => refrRT.texture,
     injectWorldRipple,
     resetSimulation,
     stepSimulation,

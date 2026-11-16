@@ -63,6 +63,10 @@ export interface StoryState {
   shadowPass: number;
   shadowSlide: number;
   windowLight: number;
+  /** 0..1: the lens looks straight up and the window is one whole disc of light (shot ⑤, second verse). */
+  winPoster: number;
+  /** Where the figure stands across that disc: 1 = off to one side, 0 = in the middle. */
+  winSlide: number;
 
   /** Surfacing and drummer. */
   surfaceAge: number;
@@ -88,6 +92,8 @@ export interface StoryState {
   /** Three coloured lamps split the drummer into three coloured shadows (0..1) and how far apart. */
   triShadow: number;
   triSpread: number;
+  /** 0..1: those shadows grow to fill the wall. */
+  triGiant: number;
 }
 
 function clamp01(v: number): number {
@@ -162,6 +168,8 @@ export function computeStoryBase(t: number): StoryState {
   const shadowPass = sstep(179.5, 185.0, t) * (1.0 - sstep(T_SURFACE - 0.4, T_SURFACE + 0.3, t));
   const shadowSlide = -0.62 * (1.0 - sstep(179.5, 196.0, t));
   const windowLight = 1.0 - 0.35 * sstep(184.0, 196.0, t);
+  const winPoster = sstep(176.0, 181.0, t) * (1.0 - sstep(189.5, 194.0, t));
+  const winSlide = 1.0 - sstep(180.0, 189.0, t);
 
   const surfaceAge = t - T_SURFACE;
   let flash = 0;
@@ -217,6 +225,8 @@ export function computeStoryBase(t: number): StoryState {
     causticFractal,
     shadowPass,
     shadowSlide,
+    winPoster,
+    winSlide,
     windowLight,
     surfaceAge,
     flash,
@@ -236,5 +246,6 @@ export function computeStoryBase(t: number): StoryState {
     rush: 0.0 * sstep(98.7, 101.2, t),
     triShadow: sstep(215.5, 217.6, t) * (1.0 - sstep(240.8, 243.4, t)),
     triSpread: 0.07,
+    triGiant: sstep(216.0, 220.5, t) * (1.0 - sstep(239.0, 243.0, t)),
   };
 }

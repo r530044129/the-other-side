@@ -57,6 +57,8 @@ function lookFrom(pos: [number, number, number], pitchDeg: number, dist = 8.0): 
 const P_UNDER_A: [number, number, number] = [0.0, -0.52, 3.3];
 const P_UNDER_B: [number, number, number] = [0.0, -0.58, 2.9];
 const P_UNDER_C: [number, number, number] = [0.0, 0.42, 3.15];
+const P_UNDER_D: [number, number, number] = [0.0, -1.25, 2.9];
+const P_UNDER_D2: [number, number, number] = [0.0, -1.10, 2.9];
 
 const CAM_KEYS: CamKey[] = [
   { t: 0.0, pos: [0, 4.13, 5.2], tgt: [0, -0.26, -2.3], fov: 54 },
@@ -76,9 +78,11 @@ const CAM_KEYS: CamKey[] = [
   { t: 64.4, pos: [0.5, 0.62, 4.8], tgt: [0, 2.3, -4.0], fov: 60, ease: 'inout3' },
   { t: 68.6, pos: [-0.5, 0.7, 4.4], tgt: [0, 2.25, -4.0], fov: 60, ease: 'linear' },
   // third: crane straight up and look down on the three flowers and what grows beneath them
-  { t: 72.2, pos: [0, 5.9, 1.9], tgt: [0, 0.0, -0.3], fov: 44, ease: 'inout3' },
-  { t: 75.2, pos: [0, 5.5, 1.6], tgt: [0, 0.0, -0.3], fov: 44, ease: 'linear' },
-  { t: 78.6, pos: [0, 2.62, 5.15], tgt: [0, 0.4, -4.4], fov: 54, ease: 'inout3' },
+  // straight down, held for six seconds: three flowers as three discs of light on black water, none of
+  // them cut by the frame, each opening in turn a bar apart; the lens sinks very slowly toward them
+  { t: 71.0, pos: [0, 8.9, 0.30], tgt: [0, 0.0, -0.32], fov: 50, ease: 'inout3' },
+  { t: 77.0, pos: [0, 8.45, 0.28], tgt: [0, 0.0, -0.32], fov: 50, ease: 'linear' },
+  { t: 80.2, pos: [0, 2.62, 5.15], tgt: [0, 0.4, -4.4], fov: 54, ease: 'inout3' },
   { t: 85.72, pos: [0, 2.62, 5.15], tgt: [0, 0.4, -4.4], fov: 54 },
   // shot 4, chapter 1: rise with the ink
   // (framing: the three flowers sit on the middle of the picture, the light show above them and its
@@ -99,8 +103,12 @@ const CAM_KEYS: CamKey[] = [
   { t: 143.85, pos: [0, 0.13, 4.7], tgt: [0, 0.72, -5.0], fov: 58, ease: 'linear' },
   { t: 145.6, pos: P_UNDER_A, tgt: lookFrom(P_UNDER_A, 20), fov: 64 },
   { t: 170.0, pos: P_UNDER_B, tgt: lookFrom(P_UNDER_B, 46), fov: 66 },
-  { t: 181.0, pos: P_UNDER_B, tgt: lookFrom(P_UNDER_B, 46), fov: 66 },
-  { t: 197.85, pos: P_UNDER_C, tgt: lookFrom(P_UNDER_C, 31), fov: 64 },
+  { t: 175.5, pos: P_UNDER_B, tgt: lookFrom(P_UNDER_B, 46), fov: 66 },
+  // second "in rainbows": sink, tip the lens straight up, and hold on the window as one whole disc of
+  // light while the figure on the other side walks across it
+  { t: 181.0, pos: P_UNDER_D, tgt: lookFrom(P_UNDER_D, 83), fov: 70, ease: 'inout3' },
+  { t: 189.5, pos: P_UNDER_D2, tgt: lookFrom(P_UNDER_D2, 83), fov: 70, ease: 'linear' },
+  { t: 197.85, pos: P_UNDER_C, tgt: lookFrom(P_UNDER_C, 31), fov: 64, ease: 'inout3' },
   // up through the sheet on the first drum hit, then hold at its level for a second and a half
   // (the rig adds the local height of the sheet during the hold, so the lens stays just above it)
   { t: 198.3, pos: P_UNDER_C, tgt: lookFrom(P_UNDER_C, 31), fov: 64, ease: 'linear' },
@@ -109,12 +117,21 @@ const CAM_KEYS: CamKey[] = [
   { t: 201.9, pos: [0, 2.36, 7.17], tgt: [0, 1.1, -4.35], fov: 57, ease: 'inout3' },
   { t: 215.5, pos: [0, 2.34, 7.1], tgt: [0, 1.1, -4.35], fov: 57, ease: 'linear' },
   // bass returns: push in low on one side, then arc across the stage
-  { t: 221.0, pos: [-2.3, 1.75, 5.5], tgt: [0.5, 2.2, -4.35], fov: 50, ease: 'inout3' },
-  { t: 229.6, pos: [2.2, 2.0, 5.8], tgt: [-0.3, 2.1, -4.35], fov: 52 },
-  { t: 236.0, pos: [0, 2.7, 7.6], tgt: [0, 1.6, -4.35], fov: 60 },
+  // (the three coloured shadows are giants now: the lens stays back and low and looks up at them, so
+  //  they tower over the water from edge to edge instead of being cropped by a push-in)
+  { t: 221.0, pos: [-1.5, 2.05, 7.5], tgt: [0.4, 3.35, -4.35], fov: 55, ease: 'inout3' },
+  { t: 229.6, pos: [1.5, 2.1, 7.7], tgt: [-0.3, 3.35, -4.35], fov: 55 },
+  { t: 236.0, pos: [0, 2.4, 8.2], tgt: [0, 3.0, -4.35], fov: 59 },
   { t: 243.3, pos: [0, 2.3, 7.05], tgt: [0, 1.1, -4.35], fov: 57 },
-  { t: 254.5, pos: [0, 2.0, 6.6], tgt: [0, 1.18, -5.55], fov: 53 },
-  { t: 286.05, pos: [0, 2.32, 8.3], tgt: [0, 0.95, -5.55], fov: 53, ease: 'linear' },
+  // finale: far enough back that the great flower is whole in the picture from the moment it arrives
+  { t: 254.5, pos: [0, 2.0, 7.5], tgt: [0, 1.5, -5.55], fov: 53 },
+  { t: 260.2, pos: [0, 1.9, 7.6], tgt: [0, 1.5, -5.55], fov: 53, ease: 'linear' },
+  // "becoming one": as the flower sinks to the waterline the lens comes down and levels out, so the
+  // horizon lies exactly across the middle and the flower and its reflection make one whole shape
+  // (the lens ends a hand's width above the water: only from there does the line where the flower
+  //  meets its reflection fall on the middle of the picture)
+  { t: 272.0, pos: [0, 0.30, 7.9], tgt: [0, 0.30, -5.55], fov: 50 },
+  { t: 286.05, pos: [0, 0.30, 8.5], tgt: [0, 0.30, -5.55], fov: 50, ease: 'linear' },
 ];
 
 function easeFn(u: number, e: Ease | undefined): number {

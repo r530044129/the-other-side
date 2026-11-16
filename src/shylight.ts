@@ -34,6 +34,8 @@ export interface ShylightEnsembleState {
   causticBounce?: number;
   /** 0..1: the flower is its own key light; the generic fill lights on the silk are pulled down. */
   selfLit?: number;
+  /** 0..1: no light falls on the silk at all (the flowers are shapes against a bright ground). */
+  silhouette?: number;
   unitA: ShylightUnitPose;
   unitB: ShylightUnitPose;
   unitC: ShylightUnitPose;
@@ -300,6 +302,25 @@ function subdivideSilkGeometryCatmullRom(srcGeo: THREE.BufferGeometry): THREE.Bu
  * - Sculpted multi-layered honey-amber / bronze-gold ruffled stamen ribbons (`#8c4308` -> `#ffbe55` -> `#ffe8a8`,
  *   ZERO blown-out yellow-white blob on head-on Shot 7!).
  */
+/** Woven linen scan shared by every flower (2K, tiled). Loaded once. */
+let weaveTexCache: { normal: THREE.Texture; pack: THREE.Texture } | null = null;
+function getWeaveTextures(): { normal: THREE.Texture; pack: THREE.Texture } {
+  if (weaveTexCache) return weaveTexCache;
+  const loader = new THREE.TextureLoader();
+  const load = (url: string) => {
+    const t = loader.load(url);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.colorSpace = THREE.NoColorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+  weaveTexCache = {
+    normal: load(import.meta.env.BASE_URL + 'textures/linen-woven/normal.jpg'),
+    pack: load(import.meta.env.BASE_URL + 'textures/linen-woven/pack_height_opacity_ao.jpg'),
+  };
+  return weaveTexCache;
+}
+
 function createZijdarPureSilkMaterial(
   silkUniforms: {
     uSilkBloom: { value: number };
@@ -327,8 +348,9 @@ function createZijdarPureSilkMaterial(
     opacity: 1.0,
   });
 
+  const weaveTex = getWeaveTextures();
   const uid = Math.random().toString(36).slice(2, 8);
-  mat.customProgramCacheKey = () => `zijdar-silk-backlit-v6-${uid}`;
+  mat.customProgramCacheKey = () => `zijdar-silk-backlit-v7-${uid}`;
 
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uSilkBloom = silkUniforms.uSilkBloom;
@@ -338,6 +360,8 @@ function createZijdarPureSilkMaterial(
     shader.uniforms.uTierWarmth = { value: tierWarmth };
     shader.uniforms.uTierIndex = { value: tierIndex };
     shader.uniforms.uMorphPair = morphPair;
+    shader.uniforms.uWeaveNormal = { value: weaveTex.normal };
+    shader.uniforms.uWeavePack = { value: weaveTex.pack };
     shader.uniforms.uMorphPairB = (morphPair as unknown as { b: { value: THREE.Vector4 } }).b;
 
     shader.vertexShader = shader.vertexShader
@@ -437,10 +461,18 @@ function createZijdarPureSilkMaterial(
         uniform float uHeadOnMode;
         uniform float uTierWarmth;
         uniform float uTierIndex;
+        // woven linen scan: tangent-space normal, and (height, opacity, ao) packed in one image
+        uniform sampler2D uWeaveNormal;
+        uniform sampler2D uWeavePack;
         varying vec3 vSilkLocalPos;
         varying vec2 vSilkUv;
         varying float vSilkAo;
         varying vec3 vBulbView;
+        // The cloth is cut as a circle: u runs once round the skirt, v from crown to hem. Repeats are chosen
+        // so the threads come out roughly square on the open skirt; each tier is shifted so seams do not line up.
+        vec2 skWeaveUv(vec2 uv, float tier) {
+          return uv * vec2(2.7, 0.6) + vec2(tier * 0.37, tier * 0.61);
+        }
 
         float skHash(vec2 p) {
           vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -510,12 +542,13 @@ function createZijdarPureSilkMaterial(
         float crU = fwidth(vSilkUv.x) * 1.5 + 0.0009;
         float creaseSlope = (skCrease(vSilkUv + vec2(crU, 0.0), uTierIndex) - skCrease(vSilkUv - vec2(crU, 0.0), uTierIndex))
                           / (2.0 * crU) * 0.0030 * smoothstep(0.04, 0.22, vSilkUv.y);
-        vec2 weavePhase = vSilkUv * 240.0 * 6.2831853;
-        float weaveH = (sin(weavePhase.x + 0.6 * sin(weavePhase.y * 0.25)) + sin(weavePhase.y + 0.6 * sin(weavePhase.x * 0.25))) * 0.5;
         vec3 dPosX = dFdx(vViewPosition);
         vec3 dPosY = dFdy(vViewPosition);
         vec3 tangU = normalize(dPosX * dFdx(vSilkUv.x) + dPosY * dFdy(vSilkUv.x) + vec3(1e-5));
-        normal = normalize(normal + tangU * clamp(creaseSlope, -0.55, 0.55) + (dPosX * dFdx(weaveH) + dPosY * dFdy(weaveH)) * 0.022);`
+        vec3 tangV = normalize(dPosX * dFdx(vSilkUv.y) + dPosY * dFdy(vSilkUv.y) + vec3(1e-5));
+        vec2 weaveUv = skWeaveUv(vSilkUv, uTierIndex);
+        vec3 weaveN = texture2D(uWeaveNormal, weaveUv).xyz * 2.0 - 1.0;
+        normal = normalize(normal + tangU * (clamp(creaseSlope, -0.55, 0.55) + weaveN.x * 0.55) + tangV * weaveN.y * 0.55);`
       )
       .replace(
         '#include <emissivemap_fragment>',
@@ -549,7 +582,7 @@ function createZijdarPureSilkMaterial(
 
         // inner tiers in the way: each takes some light and leaves it warmer
         float layers = skLayersInside(vSilkLocalPos, uTierIndex);
-        vec3 perLayer = vec3(0.80, 0.755, 0.69);
+        vec3 perLayer = vec3(0.74, 0.685, 0.60);
         vec3 layerT = pow(perLayer, vec3(layers));
 
         // creases hold a little shadow; the rolled hem is double cloth, a thin darker line
@@ -558,12 +591,23 @@ function createZijdarPureSilkMaterial(
         float hemLine = 1.0 - 0.50 * smoothstep(0.952, 0.978, vSilkUv.y) * (1.0 - smoothstep(0.992, 1.0, vSilkUv.y));
         float bakedFold = mix(0.60, 1.0, pow(clamp(vSilkAo, 0.0, 1.0), 1.2));
 
-        // thread shimmer, only when the camera is close enough to resolve threads
-        vec2 thr = vSilkUv * vec2(1500.0, 420.0);
-        float threadFade = 1.0 - smoothstep(0.0, 0.9, max(fwidth(thr.x), fwidth(thr.y)));
-        float weaveLight = mix(1.0, 0.86 + 0.14 * (sin(thr.x) * sin(thr.y)), threadFade);
+        // the weave itself: thick threads and slubs hold light back, the gaps between threads let it through.
+        // Centred on the scan's averages (height 0.41, opacity 0.94) so that from far away, where the
+        // texture blurs to its mean, the flower is exactly as bright as before.
+        vec3 weave = texture2D(uWeavePack, weaveUv).rgb;
+        float weaveLight = clamp(1.0 - (weave.r - 0.407) * 1.15 + (0.939 - weave.g) * 0.9, 0.35, 1.9) * mix(0.9, 1.0, weave.b / 0.942);
 
-        float amount = irr * incidence * through * edgeOn * creaseShade * hemLine * bakedFold * weaveLight;
+        // Seams: each petal is its own panel, sewn to the next along a line from crown to tip (nine of them),
+        // and the skirt is gathered onto a band just under the crown. A seam is double cloth: a thin dark line.
+        float seamU = abs(fract(vSilkUv.x * 9.0 + 0.5) - 0.5) / 9.0;
+        float seamW = 0.0011 + fwidth(vSilkUv.x) * 0.9;
+        float seam = 1.0 - smoothstep(seamW * 0.5, seamW, seamU);
+        float bandV = abs(vSilkUv.y - 0.085);
+        float bandW = 0.004 + fwidth(vSilkUv.y) * 0.9;
+        seam = max(seam, 1.0 - smoothstep(bandW * 0.5, bandW, bandV));
+        float seamShade = 1.0 - 0.42 * seam;
+
+        float amount = irr * incidence * through * edgeOn * creaseShade * hemLine * bakedFold * weaveLight * seamShade;
         // warm at the heart where the light is strong, paler toward the rim where only a little arrives
         vec3 lampCol = mix(vec3(1.0, 0.915, 0.79), vec3(1.0, 0.74, 0.43), smoothstep(4.0, 46.0, irr));
         vec3 silkLight = lampCol * layerT * amount * 0.034;
@@ -1095,10 +1139,17 @@ export function createShylightEnsemble(
     // Shot ②: the flower is the key. External fill drops to a trace so the silk reads bright inside,
     // dark outside, and the cool rim (a second hue) is removed.
     const self = THREE.MathUtils.clamp(state.selfLit ?? 0, 0, 1);
-    silkHemiLight.intensity = 0.15 * Math.PI * (1.0 - 0.80 * self);
-    silkWarmUplight.intensity = (0.58 + cb * 0.22 * pulse) * (1.0 - 0.86 * self);
-    silkFillUplight.intensity = (0.22 + cb * 0.12 * pulse) * (1.0 - 0.86 * self);
+    silkHemiLight.intensity = 0.15 * Math.PI * (1.0 - 0.93 * self);
+    silkWarmUplight.intensity = (0.58 + cb * 0.22 * pulse) * (1.0 - 0.95 * self);
+    silkFillUplight.intensity = (0.22 + cb * 0.12 * pulse) * (1.0 - 0.95 * self);
     silkMistRimLight.intensity = 0.14 * (1.0 - self);
+    {
+      const sil = 1.0 - 0.93 * THREE.MathUtils.clamp(state.silhouette ?? 0, 0, 1);
+      silkHemiLight.intensity *= sil;
+      silkWarmUplight.intensity *= sil;
+      silkFillUplight.intensity *= sil;
+      silkMistRimLight.intensity *= sil;
+    }
 
     applyPoseToUnit(units.A, state.unitA, state.time);
     applyPoseToUnit(units.B, state.unitB, state.time);

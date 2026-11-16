@@ -27,6 +27,13 @@ export interface NaveState {
   lights: { x: number; y: number; z: number; glow: number }[];
   /** Pixel height of the drawing buffer over 2*tan(fov/2), for point sizes. */
   pxPerUnit: number;
+  /**
+   * A flower's light thrown back off the water onto the arch wall beside it, with the flower's own
+   * shadow standing in that light, several times its size: hub position, 0..1 open, scale, level.
+   */
+  wallShadows?: { x: number; hubY: number; z: number; open: number; scale: number; level: number }[];
+  /** A lamp that travels across the far bays, behind the columns (nave-local metres), and its level. */
+  sweep?: { x: number; y: number; z: number; level: number };
 }
 
 export interface NaveHandles {
@@ -34,10 +41,14 @@ export interface NaveHandles {
   /** Unit vector toward the nave's vanishing point (world space). */
   axis: THREE.Vector3;
   update: (s: NaveState) => void;
+  /** World position of the travelling lamp (valid after update). */
+  sweepWorld: THREE.Vector3;
 }
 
 const ARCHES = 16;
 const LAMPS = 8;
+/** The eight fixed lamps plus the travelling one. */
+const NL = LAMPS + 1;
 const FOG_K = 0.030;
 
 /** Catenary parameter a for an inverted chain of half-width w and rise h: a * (cosh(w / a) - 1) = h. */
@@ -85,6 +96,10 @@ export function createNave(): NaveHandles {
     const w = p.clone().applyMatrix4(inner.matrixWorld);
     lampWorld.push(new THREE.Vector4(w.x, w.y, w.z, 1));
   }
+  // slot for the travelling lamp (w = its level; 0 = not there)
+  lampWorld.push(new THREE.Vector4(0, -50, 0, 0));
+  const sweepLocal = new THREE.Vector3(0, 2.4, -34);
+  const sweepWorld = new THREE.Vector3();
 
   const sharedUniforms = {
     uDkAxis: { value: axis.clone() },
@@ -164,6 +179,8 @@ export function createNave(): NaveHandles {
     uPat: { value: new THREE.Vector4(0, 0, 0, 3) },
     uPatMode: { value: new THREE.Vector4(0, 0, 0, 0) },
     uFlowers: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+    uShA: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
+    uShB: { value: [new THREE.Vector4(), new THREE.Vector4(), new THREE.Vector4()] },
   };
   const archMat = new THREE.ShaderMaterial({
     uniforms: archUniforms,
@@ -195,10 +212,12 @@ export function createNave(): NaveHandles {
       uniform float uBlackout;
       uniform float uLampGain;
       uniform float uVaultWash;
-      uniform vec4 uLamps[${LAMPS}];
+      uniform vec4 uLamps[${NL}];
       uniform vec4 uPat;
       uniform vec4 uPatMode;
       uniform vec4 uFlowers[4];
+      uniform vec4 uShA[3];
+      uniform vec4 uShB[3];
       ${DK_FOG_GLSL}
       ${PAT_GLSL}
 
@@ -233,18 +252,70 @@ export function createNave(): NaveHandles {
 
         // plaster: a little unevenness so lit soffits are not a flat gradient
         float stain = nNoise(vWorldPos.xy * 0.35 + vWorldPos.z * 0.2) * 0.6 + nNoise(vWorldPos.yx * 1.7) * 0.4;
-        float albedo = 0.55 + 0.45 * stain;
+        // Aged surface: long streaks running down the member (water has run down it for years), pores,
+        // and a damp, darker foot where it stands in the water. The relief also tilts the normal, so a
+        // lamp grazing the surface picks the grain out; flat shading is what made it look like a model.
+        float streak = nNoise(vec2(vWorldPos.x * 7.0 + vWorldPos.z * 5.3, vWorldPos.y * 0.5));
+        float pores = nNoise(vWorldPos.xy * 11.0 + vWorldPos.z * 8.0) * 0.6 + nNoise(vWorldPos.zy * 27.0 + vWorldPos.x * 21.0) * 0.4;
+        float relief = streak * 0.6 + pores * 0.4;
+        vec3 dpx = dFdx(vWorldPos);
+        vec3 dpy = dFdy(vWorldPos);
+        vec3 grad = (dpx * dFdx(relief) + dpy * dFdy(relief)) / max(dot(dpx, dpx) + dot(dpy, dpy), 1e-8);
+        N = normalize(N - grad * 0.028 * smoothstep(60.0, 12.0, dist));
+        float damp = 1.0 - smoothstep(0.05, 1.1, vWorldPos.y + (stain - 0.5) * 0.7);
+        float albedo = (0.42 + 0.58 * stain) * (0.60 + 0.62 * relief) * mix(1.0, 0.42, damp);
 
         vec3 lit = vec3(0.0);
         vec3 amber = vec3(1.0, 0.60, 0.27);
-        for (int i = 0; i < ${LAMPS}; i++) {
+        for (int i = 0; i < ${NL}; i++) {
           vec3 L = uLamps[i].xyz - vWorldPos;
           float d2 = dot(L, L);
           float ndl = max(0.0, dot(N, L * inversesqrt(d2)));
           // faces look down the nave, so a lamp only grazes them; soffits face their lamp
-          lit += amber * ndl / (2.0 + d2) * mix(0.20, 1.6, vKind);
+          lit += amber * ndl / (2.0 + d2) * mix(0.20, 1.6, vKind) * uLamps[i].w;
         }
         lit *= uLampGain * 0.115;
+
+        // A flower's light, thrown back up off the water, washes the wall beside it, and the flower
+        // stands in that light: its shadow lands on the wall several times its own size and comes down
+        // and opens as the flower does. The source is a patch of bright water, so every edge is soft.
+        for (int i = 0; i < 3; i++) {
+          float lv = uShB[i].y;
+          if (lv < 0.003) continue;
+          vec3 hub = uShA[i].xyz;
+          float open = uShA[i].w;
+          float sc = uShB[i].x;
+          // (the source sits below the surface: light off a mirror comes as if from the flower's image under it)
+          vec3 S = vec3(hub.x + uShB[i].z, -0.55, hub.z + uShB[i].w);
+          vec3 R = vWorldPos - S;
+          float rl = length(R);
+          float ndl = max(0.0, dot(N, -R / rl));
+          // a pool, not a flood: it thins with height and away from the line the light travels along
+          vec3 nrm = normalize(vec3(hub.x - S.x, 0.0, hub.z - S.z));
+          vec3 tg = vec3(-nrm.z, 0.0, nrm.x);
+          float along = dot(R, nrm);
+          float side = dot(R, tg);
+          float pool = exp(-(side * side) / (0.13 * along * along + 1.0)) * exp(-max(vWorldPos.y - 2.5, 0.0) / 5.0);
+          pool *= smoothstep(-0.2, 1.2, vWorldPos.y) * 34.0 / (34.0 + rl * rl * 0.12);
+          float occl = 0.0;
+          float reach = dot(hub - S, nrm);
+          if (along > reach + 0.05) {
+            float k = reach / along;
+            vec3 P = S + R * k;
+            float u = abs(dot(P - hub, tg));
+            float v = P.y - hub.y;
+            float len = (0.446 - 0.056 * open) * mix(1.22, 1.08, open) * sc;
+            float f = clamp(-v / len, 0.0, 1.0);
+            float rad = sc * mix(0.035 + 0.115 * f, 0.07 + 0.50 * pow(f, 0.55), open);
+            float pen = 0.11 * sc;
+            // the hem is cut in points
+            float hem = len * (0.84 + 0.16 * abs(cos(u / (0.57 * sc) * 7.85)));
+            occl = smoothstep(rad + pen, rad - pen * 0.6, u) * smoothstep(-hem - pen * 0.5, -hem + pen * 0.5, v) * smoothstep(pen * 0.6, -pen * 0.4, v);
+            // the cable it hangs from
+            occl = max(occl, 0.55 * smoothstep(0.05 * sc, 0.0, u) * step(0.0, v));
+          }
+          lit += vec3(1.0, 0.66, 0.34) * ndl * pool * lv * 0.125 * (1.0 - 0.94 * occl) * mix(1.0, 0.35, vKind);
+        }
 
         // gold water light on the vaults: strongest on the soffits low down, thinning as it climbs
         float climb = exp(-max(vWorldPos.y, 0.0) / 6.5) * smoothstep(-0.2, 0.8, vWorldPos.y);
@@ -379,7 +450,7 @@ export function createNave(): NaveHandles {
       uniform float uBlackout;
       uniform float uLampGain;
       uniform float uGrow;
-      uniform vec4 uLamps[${LAMPS}];
+      uniform vec4 uLamps[${NL}];
       ${DK_FOG_GLSL}
       void main() {
         // nothing exists beyond the growing tip
@@ -389,10 +460,10 @@ export function createNave(): NaveHandles {
         vec3 toCam = cameraPosition - vWorldPos;
         float dist = length(toCam);
         vec3 lit = vec3(0.0);
-        for (int i = 0; i < ${LAMPS}; i++) {
+        for (int i = 0; i < ${NL}; i++) {
           vec3 L = uLamps[i].xyz - vWorldPos;
           float d2 = dot(L, L);
-          lit += vec3(1.0, 0.60, 0.27) * max(0.0, dot(N, L * inversesqrt(d2))) / (2.0 + d2);
+          lit += vec3(1.0, 0.60, 0.27) * max(0.0, dot(N, L * inversesqrt(d2))) / (2.0 + d2) * uLamps[i].w;
         }
         // the tip glows faintly while it is growing, like new wood
         float tip = exp(-((uGrow - vGrow) * (uGrow - vGrow)) / 0.0009) * step(uGrow, 0.995);
@@ -424,13 +495,16 @@ export function createNave(): NaveHandles {
     transparent: true,
     vertexShader: /* glsl */ `
       attribute float aSeed;
+      attribute float aBoost;
       varying vec3 vWorldPos;
       varying vec3 vNormalW;
       varying float vV;
       varying float vAng;
       varying float vSeed;
+      varying float vBoost;
       uniform float uTime;
       void main() {
+        vBoost = aBoost;
         vec3 p = position;
         float ang = atan(p.z, p.x);
         float u = clamp((0.36 - p.y) / 0.72, 0.0, 1.0);
@@ -453,6 +527,7 @@ export function createNave(): NaveHandles {
       varying float vV;
       varying float vAng;
       varying float vSeed;
+      varying float vBoost;
       uniform float uPresence;
       uniform float uBlackout;
       uniform float uLampGain;
@@ -467,15 +542,16 @@ export function createNave(): NaveHandles {
         float pleatShade = 0.84 + 0.16 * sin(vAng * 9.0 + vSeed * 30.0);
         float core = exp(-((vV - 0.72) / 0.34) * ((vV - 0.72) / 0.34));
         vec3 warm = mix(vec3(1.0, 0.50, 0.20), vec3(1.0, 0.76, 0.48), core);
-        vec3 col = warm * (0.06 + 1.5 * core) * pleatShade * (0.40 + 0.60 * ndv) * uLampGain * 0.62;
+        vec3 col = warm * (0.06 + 1.5 * core) * pleatShade * (0.40 + 0.60 * ndv) * uLampGain * 0.62 * vBoost;
         float fog = 1.0 - exp(-dist * ${FOG_K.toFixed(3)});
         col = mix(col, dkFog(-V), fog * 0.9);
         gl_FragColor = vec4(col * (1.0 - uBlackout), smoothstep(0.0, 1.0, uPresence));
       }
     `,
   });
-  const lamps = new THREE.InstancedMesh(lampGeo, lampMat, LAMPS);
-  const seeds = new Float32Array(LAMPS);
+  const lamps = new THREE.InstancedMesh(lampGeo, lampMat, NL);
+  const seeds = new Float32Array(NL);
+  const boosts = new Float32Array(NL).fill(1);
   const dummy = new THREE.Object3D();
   const cordPts: number[] = [];
   const LAMP_SCALE = 1.35;
@@ -489,7 +565,19 @@ export function createNave(): NaveHandles {
     seeds[i] = rand();
     cordPts.push(p.x, p.y + 0.36 * LAMP_SCALE, p.z, p.x, 32, p.z);
   }
+  // the travelling lamp: last instance, placed every frame
+  seeds[LAMPS] = 0.37;
+  boosts[LAMPS] = 0.0;
+  const SWEEP_SCALE = 1.9;
+  dummy.position.set(0, -50, 0);
+  dummy.scale.setScalar(0.0001);
+  dummy.updateMatrix();
+  lamps.setMatrixAt(LAMPS, dummy.matrix);
   lampGeo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seeds, 1));
+  const boostAttr = new THREE.InstancedBufferAttribute(boosts, 1);
+  boostAttr.setUsage(THREE.DynamicDrawUsage);
+  lampGeo.setAttribute('aBoost', boostAttr);
+  lamps.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   lamps.frustumCulled = false;
   lamps.renderOrder = -12;
   inner.add(lamps);
@@ -506,14 +594,22 @@ export function createNave(): NaveHandles {
   const haloGeo = new THREE.InstancedBufferGeometry();
   haloGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
   haloGeo.setIndex([0, 1, 2, 0, 2, 3]);
-  const haloCentres = new Float32Array(LAMPS * 3);
+  const haloCentres = new Float32Array(NL * 3);
+  const haloBoost = new Float32Array(NL).fill(1);
+  haloBoost[LAMPS] = 0;
   for (let i = 0; i < LAMPS; i++) {
     haloCentres[i * 3] = lampLocal[i].x;
     haloCentres[i * 3 + 1] = lampLocal[i].y - 0.1;
     haloCentres[i * 3 + 2] = lampLocal[i].z;
   }
-  haloGeo.setAttribute('aCentre', new THREE.InstancedBufferAttribute(haloCentres, 3));
-  haloGeo.instanceCount = LAMPS;
+  haloCentres[LAMPS * 3 + 1] = -50;
+  const haloCentreAttr = new THREE.InstancedBufferAttribute(haloCentres, 3);
+  haloCentreAttr.setUsage(THREE.DynamicDrawUsage);
+  haloGeo.setAttribute('aCentre', haloCentreAttr);
+  const haloBoostAttr = new THREE.InstancedBufferAttribute(haloBoost, 1);
+  haloBoostAttr.setUsage(THREE.DynamicDrawUsage);
+  haloGeo.setAttribute('aHBoost', haloBoostAttr);
+  haloGeo.instanceCount = NL;
   const haloMat = new THREE.ShaderMaterial({
     uniforms: sharedUniforms,
     transparent: true,
@@ -521,12 +617,16 @@ export function createNave(): NaveHandles {
     blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
       attribute vec3 aCentre;
+      attribute float aHBoost;
       varying vec2 vQ;
       varying float vDist;
+      varying float vHB;
       void main() {
         vec4 mv = modelViewMatrix * vec4(aCentre, 1.0);
         vDist = -mv.z;
         vQ = position.xy;
+        vHB = aHBoost;
+        // the travelling lamp is brighter, so the fog it lights reaches further
         mv.xy += position.xy * 3.4;
         gl_Position = projectionMatrix * mv;
       }
@@ -535,17 +635,18 @@ export function createNave(): NaveHandles {
       precision highp float;
       varying vec2 vQ;
       varying float vDist;
+      varying float vHB;
       uniform float uPresence;
       uniform float uBlackout;
       uniform float uLampGain;
       void main() {
         float r = length(vQ);
-        if (r > 1.0) discard;
+        if (r > 1.0 || vHB < 0.002) discard;
         // light scattered by fog around a small source: a steep core and a long soft skirt
         float glow = exp(-r * 7.0) * 0.55 + exp(-r * r * 5.5) * 0.10;
         glow *= 1.0 - smoothstep(0.75, 1.0, r);
         float air = exp(-vDist * ${(FOG_K * 0.55).toFixed(4)});
-        vec3 col = vec3(1.0, 0.60, 0.28) * glow * air * uLampGain * 0.42;
+        vec3 col = vec3(1.0, 0.60, 0.28) * glow * air * uLampGain * 0.42 * vHB;
         gl_FragColor = vec4(col * (1.0 - uBlackout) * uPresence, 1.0);
       }
     `,
@@ -620,6 +721,47 @@ export function createNave(): NaveHandles {
       if (l) archUniforms.uFlowers.value[i].set(l.x, l.y, l.z, l.glow);
       else archUniforms.uFlowers.value[i].set(0, 0, 0, 0);
     }
+    for (let i = 0; i < 3; i++) {
+      const w = s.wallShadows?.[i];
+      if (w && w.level > 0.003) {
+        archUniforms.uShA.value[i].set(w.x, w.hubY, w.z, w.open);
+        // the bright water lies toward the lens and a little to the right of the flower, so the shadow
+        // is thrown back and to the left, onto the dark wall
+        archUniforms.uShB.value[i].set(w.scale, w.level, 1.2, 3.4);
+      } else {
+        archUniforms.uShB.value[i].set(1, 0, 0, 0);
+      }
+    }
+    {
+      const lv = s.sweep ? s.sweep.level : 0;
+      if (s.sweep && lv > 0.003) {
+        sweepLocal.set(s.sweep.x, s.sweep.y, s.sweep.z);
+        sweepWorld.copy(sweepLocal).applyMatrix4(inner.matrixWorld);
+        lampWorld[LAMPS].set(sweepWorld.x, sweepWorld.y, sweepWorld.z, 2.4 * lv);
+        dummy.position.copy(sweepLocal);
+        dummy.rotation.set(0, 0, 0);
+        dummy.scale.setScalar(SWEEP_SCALE);
+        dummy.updateMatrix();
+        lamps.setMatrixAt(LAMPS, dummy.matrix);
+        boosts[LAMPS] = 2.6 * lv;
+        haloCentres[LAMPS * 3] = sweepLocal.x;
+        haloCentres[LAMPS * 3 + 1] = sweepLocal.y - 0.1;
+        haloCentres[LAMPS * 3 + 2] = sweepLocal.z;
+        haloBoost[LAMPS] = 1.15 * lv;
+      } else {
+        lampWorld[LAMPS].set(0, -50, 0, 0);
+        dummy.position.set(0, -50, 0);
+        dummy.scale.setScalar(0.0001);
+        dummy.updateMatrix();
+        lamps.setMatrixAt(LAMPS, dummy.matrix);
+        boosts[LAMPS] = 0;
+        haloBoost[LAMPS] = 0;
+      }
+      lamps.instanceMatrix.needsUpdate = true;
+      boostAttr.needsUpdate = true;
+      haloCentreAttr.needsUpdate = true;
+      haloBoostAttr.needsUpdate = true;
+    }
     lampUniforms.uTime.value = s.time;
     cordMat.opacity = 0.9 * s.presence * (1 - s.blackout);
 
@@ -646,5 +788,5 @@ export function createNave(): NaveHandles {
     beadUniforms.uBlackout.value = s.blackout;
   }
 
-  return { group, axis, update };
+  return { group, axis, update, sweepWorld };
 }

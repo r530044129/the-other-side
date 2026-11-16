@@ -44,6 +44,8 @@ export interface GalleryUpdateState {
   drummerReveal?: number;
   triShadow?: number;
   triSpread?: number;
+  /** 0..1: the three coloured shadows grow until they tower over the whole stage. */
+  triGiant?: number;
   echoTextures?: [THREE.Texture, THREE.Texture];
 }
 
@@ -329,6 +331,7 @@ export function createGalleryScene(): GalleryRigHandles {
     uReveal: { value: 0.0 },
     uTri: { value: 0.0 },
     uTriSpread: { value: 0.07 },
+    uTriGiant: { value: 0.0 },
     uEchoTex1: { value: dummyBlackTex as THREE.Texture },
     uEchoTex2: { value: dummyBlackTex as THREE.Texture },
     uBlackout: { value: 0.0 },
@@ -369,6 +372,7 @@ export function createGalleryScene(): GalleryRigHandles {
       uniform float uReveal;
       uniform float uTri;
       uniform float uTriSpread;
+      uniform float uTriGiant;
       uniform sampler2D uEchoTex1;
       uniform sampler2D uEchoTex2;
       uniform float uBlackout;
@@ -438,9 +442,21 @@ export function createGalleryScene(): GalleryRigHandles {
         // Shot 6 (3:17.8 ~ 4:03.3): GIANT CENTERED DRUMMER SHADOW WITH MULTI-SCALE PENUMBRA & CREPUSCULAR RAYS!
         if (uDrummerShadow > 0.002) {
           // Broad stage-wide Deakins 2700K amber volumetric mist fan (no isolated small orange oval!)
-          vec2 stageDist = vec2(vWorldPos.x / 8.8, (vWorldPos.y - 2.68) / 3.45);
+          // (the lit fan widens and climbs with the shadows)
+          vec2 stageDist = vec2(vWorldPos.x / mix(8.8, 11.5, uTriGiant), (vWorldPos.y - mix(2.68, 3.6, uTriGiant)) / mix(3.45, 5.2, uTriGiant));
           float stageGlow = exp(-dot(stageDist, stageDist) * 0.92) * (0.68 + 0.42 * fogTex);
           float spotCore = exp(-dot(vec2(vWorldPos.x / 4.2, (vWorldPos.y - 2.55) / 2.2), vec2(vWorldPos.x / 4.2, (vWorldPos.y - 2.55) / 2.2)) * 1.15);
+
+          // The light lands on a hung backcloth, not on fog: long folds from the rail, a few slack creases,
+          // and two vertical seams. A fold turned toward the lamp is brighter, one turned away darker, and
+          // the shadow bends as it crosses them, which is what tells the eye it lies on a surface.
+          float clX = vWorldPos.x;
+          float clY = vWorldPos.y;
+          float foldPh = clX * 1.9 + 1.4 * sin(clX * 0.53 + 1.0) + 0.30 * sin(clY * 0.8 + clX * 0.4);
+          float foldSlope = cos(foldPh) * 0.60 + cos(clX * 6.3 + 0.9 * sin(clY * 1.3)) * 0.26
+                          + cos(clX * 17.0 + clY * 2.1 + 2.0 * sin(clY * 0.9)) * 0.10;
+          float clothSeam = 1.0 - 0.22 * (exp(-pow((clX + 3.1) / 0.035, 2.0)) + exp(-pow((clX - 3.4) / 0.035, 2.0)));
+          float clothShade = (1.0 + 0.20 * foldSlope) * clothSeam;
 
           float coreOcc = 0.0;
           float softPenumbra = 0.0;
@@ -448,9 +464,12 @@ export function createGalleryScene(): GalleryRigHandles {
           float crepuscularShaft = 0.0;
           vec3 triOcc = vec3(0.0);
 
-          vec4 projClip = uDrummerMat * vec4(vWorldPos.x / 1.6, 0.25 + (vWorldPos.y - 0.25) / 1.6, vWorldPos.z, 1.0);
+          // (the lamps come closer to him: the shadows grow from 1.6 to 2.15 times life size and fill the wall)
+          float shScale = mix(1.6, 2.15, uTriGiant);
+          vec4 projClip = uDrummerMat * vec4(vWorldPos.x / shScale, 0.25 + (vWorldPos.y - 0.25) / shScale, vWorldPos.z, 1.0);
           if (projClip.w > 0.05) {
             vec2 sUv = projClip.xy / projClip.w;
+            sUv.x += foldSlope * 0.0045;
             // Smoothly fade the drummer's lower legs/throne into the rising stage mist right above the hovering water (y ~ 1.55m -> 2.15m)!
             float lowerMistFade = smoothstep(1.52, 2.18, vWorldPos.y);
             if (sUv.x > 0.01 && sUv.x < 0.99 && sUv.y > 0.01 && sUv.y < 0.99) {
@@ -526,7 +545,7 @@ export function createGalleryScene(): GalleryRigHandles {
           float goldenRimWrap = 0.0;
 
           vec3 litAmberMist =
-            vec3(0.30, 0.180, 0.066) * (stageGlow * 0.42 + spotCore * 0.80) * crepuscularShaft * (1.0 - coreOcc * 0.90) +
+            vec3(0.30, 0.180, 0.066) * (stageGlow * 0.42 + spotCore * 0.80) * crepuscularShaft * (1.0 - coreOcc * 0.90) * clothShade +
             vec3(0.82, 0.52, 0.18) * goldenRimWrap * 0.75;
 
           // Velvety smoked-indigo shadow umbra (never harsh 2D #000000 ink!)
@@ -537,10 +556,11 @@ export function createGalleryScene(): GalleryRigHandles {
           if (uTri > 0.01) {
             // red, teal and gold lamps; a shadow of one lamp is still lit by the other two
             float stageL = (stageGlow * 0.46 + spotCore * 0.86) * crepuscularShaft;
+            // (purer lamp colours as the shadows grow, so each shadow is clearly its own colour)
             vec3 triLit =
-              vec3(0.40, 0.045, 0.085) * (1.0 - triOcc.x * 0.96) +
-              vec3(0.035, 0.24, 0.27) * (1.0 - triOcc.y * 0.96) +
-              vec3(0.25, 0.155, 0.03) * (1.0 - triOcc.z * 0.96);
+              mix(vec3(0.40, 0.045, 0.085), vec3(0.58, 0.02, 0.045), uTriGiant) * (1.0 - triOcc.x * 0.96) +
+              mix(vec3(0.035, 0.24, 0.27), vec3(0.0, 0.27, 0.36), uTriGiant) * (1.0 - triOcc.y * 0.96) +
+              mix(vec3(0.25, 0.155, 0.03), vec3(0.23, 0.20, 0.0), uTriGiant) * (1.0 - triOcc.z * 0.96);
             float allOcc = triOcc.x * triOcc.y * triOcc.z;
             vec3 threeLamps = mix(triLit * stageL * 0.62, velvetUmbra, smoothstep(0.1, 0.9, allOcc) * 0.8);
             oneLamp = mix(oneLamp, threeLamps, uTri);
@@ -1229,6 +1249,7 @@ export function createGalleryScene(): GalleryRigHandles {
     mistScreenUniforms.uReveal.value = state.drummerReveal ?? 0;
     mistScreenUniforms.uTri.value = state.triShadow ?? 0;
     mistScreenUniforms.uTriSpread.value = state.triSpread ?? 0.07;
+    mistScreenUniforms.uTriGiant.value = state.triGiant ?? 0;
     if (state.echoTextures) {
       mistScreenUniforms.uEchoTex1.value = state.echoTextures[0];
       mistScreenUniforms.uEchoTex2.value = state.echoTextures[1];
