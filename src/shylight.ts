@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { CLIP_BLOOM, CLIP_NAMES } from './shot2';
+import { isMobile } from './device';
 
 export interface ShylightUnitPose {
   /** 0 = faded into upper volumetric mist, 1 = fully present floating in space */
@@ -82,14 +83,12 @@ function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): 
  * - Eliminates 100% of straight polygonal chord segments on `4.5x` head-on Shot 7 close-ups AND
  *   smooths the closed-bud zigzag into continuous supple silk curves!
  */
-function subdivideSilkGeometryCatmullRom(srcGeo: THREE.BufferGeometry): THREE.BufferGeometry {
+function subdivideSilkGeometryCatmullRom(srcGeo: THREE.BufferGeometry, subU = 2, subV = 2): THREE.BufferGeometry {
   const srcPos = srcGeo.attributes.position as THREE.BufferAttribute;
   if (!srcPos || srcPos.count !== 3600) return srcGeo;
 
   const NU = 144;
   const NV = 25;
-  const subU = 2;
-  const subV = 2;
   const outNU = NU * subU; // 288 circumferential silk columns!
   const outNV = (NV - 1) * subV + 1; // 49 vertical rows!
   const outCount = outNU * outNV;
@@ -766,6 +765,7 @@ export function createShylightEnsemble(
 
         // 1. Soften `_silk_ao` on inner stamen tiers AND apply Bicubic Catmull-Rom `288x49` Subdivision
         //    to all 5 silk meshes once at load time -> 100% butter-smooth scalloped rims even at 4.6x close-up!
+        const lightSilkGeo: Record<string, THREE.BufferGeometry> = {};
         srcRoot.traverse((obj) => {
           if ((obj as THREE.Mesh).isMesh && obj.name.startsWith('Silk_')) {
             const mesh = obj as THREE.Mesh;
@@ -786,6 +786,10 @@ export function createShylightEnsemble(
                 aoAttr.needsUpdate = true;
               }
             }
+            // On a phone the small lamps are subdivided around the rim only (288x25, half the vertices, every
+            // one of which carries 60 morph targets through the reflection and the main pass). The rim stays
+            // round; only the finale's giant flower, seen close, gets the full 288x49 (kept below).
+            if (isMobile) lightSilkGeo[mesh.name] = subdivideSilkGeometryCatmullRom(mesh.geometry, 2, 1);
             mesh.geometry = subdivideSilkGeometryCatmullRom(mesh.geometry);
           }
         });
@@ -832,7 +836,8 @@ export function createShylightEnsemble(
             Silk_Tier5_Stamen: createZijdarPureSilkMaterial(silkUniforms, 1.00, 4.0, mkPair('Silk_Tier5_Stamen')),
           };
           Object.values(tierMats).forEach((m) => {
-            m.envMap = envTex;
+            // envMapIntensity is 0, so the map adds nothing to the picture; a phone skips sampling it
+            if (!isMobile) m.envMap = envTex;
           });
 
           // Stagger petal azimuthal angles (+20 deg per tier) like a real botanical lotus / camellia
@@ -859,6 +864,7 @@ export function createShylightEnsemble(
 
             if ((obj as THREE.Mesh).isMesh && obj.name.startsWith('Silk_')) {
               const mesh = obj as THREE.Mesh;
+              if (!isGiant && lightSilkGeo[mesh.name]) mesh.geometry = lightSilkGeo[mesh.name];
               mesh.material = tierMats[mesh.name] ?? tierMats.Silk_Tier1_Outer;
               mesh.rotation.y = tierAzimuthOffsets[mesh.name] ?? 0.0;
               mesh.updateMorphTargets();

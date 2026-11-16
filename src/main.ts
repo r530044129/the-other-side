@@ -274,7 +274,45 @@ async function bootstrap() {
   };
 
   const tmpSize = new THREE.Vector2();
+  // ?prof=1: GPU time of each stage (timer queries) and CPU time, as running averages in window.__prof
+  const PROF = params.get('prof') === '1';
+  const profGl = renderer.getContext() as WebGL2RenderingContext;
+  const tq = PROF ? profGl.getExtension('EXT_disjoint_timer_query_webgl2') : null;
+  const prof: Record<string, number> = {};
+  const pending: { q: WebGLQuery; name: string }[] = [];
+  let curQ: WebGLQuery | null = null;
+  let curName = '';
+  let cpuT = 0;
+  const avg = (k: string, v: number) => (prof[k] = prof[k] === undefined ? v : prof[k] * 0.9 + v * 0.1);
+  const mark = (next: string | null) => {
+    if (!PROF) return;
+    const now = performance.now();
+    if (curName) avg('cpu:' + curName, now - cpuT);
+    cpuT = now;
+    if (tq) {
+      if (curQ) {
+        profGl.endQuery(tq.TIME_ELAPSED_EXT);
+        pending.push({ q: curQ, name: curName });
+        curQ = null;
+      }
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const { q, name } = pending[i];
+        if (profGl.getQueryParameter(q, profGl.QUERY_RESULT_AVAILABLE)) {
+          if (!profGl.getParameter(tq.GPU_DISJOINT_EXT)) avg('gpu:' + name, profGl.getQueryParameter(q, profGl.QUERY_RESULT) / 1e6);
+          profGl.deleteQuery(q);
+          pending.splice(i, 1);
+        }
+      }
+      if (next) {
+        curQ = profGl.createQuery();
+        profGl.beginQuery(tq.TIME_ELAPSED_EXT, curQ!);
+      }
+    }
+    curName = next ?? '';
+  };
+  (window as any).__prof = prof;
   function renderOneFrame(dt: number, snapCameraImmediately = false): ChoreographySnapshot {
+    mark('cpu-start');
     const snap = choreographer.step(dt);
     latestSnap = snap;
     const story = snap.story;
@@ -282,7 +320,9 @@ async function bootstrap() {
     // 2.39:1 picture inside whatever window we have
     // (the bars close in as the camera comes down from the title, so the oil lettering is not cropped)
     const bandFull = Math.min(1.0, cameraRig.camera.aspect / 2.39);
-    const band = 1.0 + (bandFull - 1.0) * sstep(7.4, 11.2, snap.time);
+    let band = 1.0 + (bandFull - 1.0) * sstep(7.4, 11.2, snap.time);
+    // a phone keeps its bars from the first frame (see letterboxMax in device.ts)
+    band = Math.min(band, quality.letterboxMax);
     // weak top light of the nave, breathing very slowly with the strings
     const dkTop = 0.85 + 0.25 * s2.otherSlow;
     const fovPunch =
@@ -350,6 +390,7 @@ async function bootstrap() {
       : snap.shylightGiant;
     const activeLights = shylights.getLightSources();
 
+    mark('drummer');
     // 3. Update Hidden 3D Drummer & Render Offscreen Centered Shadow Silhouette Mask (Shot 6)
     latestDrummerTel = drummerShadow.updateAndRenderShadow(renderer, {
       presence: snap.drummerRigPresence,
@@ -368,6 +409,7 @@ async function bootstrap() {
       waterPool.injectWorldRipple(r.worldX, r.worldZ, r.radiusMeters, r.strength, r.strikeCarpetUV, r.fx);
     }
 
+    mark('sim');
     // 5. Step Boundless Water Pool PDE, Oil-Film Title Fluid, 3D Underwater Ink & Full-Width XPBD Water Carpet
     waterPool.stepSimulation(renderer, dt, {
       time: snap.time,
@@ -585,6 +627,7 @@ async function bootstrap() {
       refraction: waterPool.getRefractionTexture(),
       blackout: snap.endingBlackout,
     });
+    mark('refl+refr');
     const splashShown = splash.group.visible;
     splash.group.visible = false;
     // 7. Render Planar Water Mirror Reflection & Airborne Carpet Background Caustic Refraction
@@ -601,6 +644,7 @@ async function bootstrap() {
         : undefined
     );
 
+    mark('scene');
     splash.group.visible = splashShown;
     // 8. Render HDR Main Scene + ACES Filmic / Analog Video Feedback Composite
     // only the 2.39:1 picture is drawn; the black bars cost nothing
@@ -612,6 +656,7 @@ async function bootstrap() {
     gallery.root.visible = !(window as any).__noGallery;
     if ((window as any).__noNave) nave.group.visible = false;
     renderer.render(scene, cameraRig.camera);
+    mark('post');
 
     const shaftScreen: [number, number, number][] = [];
     {
@@ -656,6 +701,7 @@ async function bootstrap() {
       edgeSoft: s2.look * 0.4,
       underGrade: story.underAmt,
     });
+    mark(null);
 
     // Ask for sound: a few seconds after the music starts, and for as long as the page can see a problem
     soundHint.update(snap.hasStarted && snap.playing, choreographer.soundIssue(), performance.now());

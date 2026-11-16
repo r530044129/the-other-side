@@ -35,6 +35,12 @@ export interface QualityProfile {
   /** Drummer shadow: mask size and the most shutter sub-frames per strike. */
   shadowRes: number;
   shadowBlurSamples: number;
+  /**
+   * Tallest the picture may be, as a fraction of the screen height. A phone held sideways in Safari is
+   * wider than 2.39:1, so without this it would get no black bars at all (and the song line, the hint and
+   * the timeline would sit on the picture). Below 1 the bars are always there, the opening included.
+   */
+  letterboxMax: number;
 }
 
 const DESKTOP: QualityProfile = {
@@ -50,22 +56,24 @@ const DESKTOP: QualityProfile = {
   waterRTSize: null,
   shadowRes: 1024,
   shadowBlurSamples: 10,
+  letterboxMax: 1.0,
 };
 
 const MOBILE: QualityProfile = {
-  maxRenderW: 1440,
+  maxRenderW: 1200,
   canvasAntialias: false,
   preserveDrawingBuffer: false,
   minRenderScale: 0.5,
   // step down before 30 fps is lost, not after: a phone only gets hotter as the song goes on
   slowFrameMs: 27.0,
   msaaSamples: 2,
-  dofTaps: 10,
+  dofTaps: 8,
   shaftTaps: 5,
-  sweepTaps: 16,
-  waterRTSize: [640, 400],
+  sweepTaps: 12,
+  waterRTSize: [480, 300],
   shadowRes: 512,
   shadowBlurSamples: 4,
+  letterboxMax: 0.84,
 };
 
 export const quality: QualityProfile = isMobile ? MOBILE : DESKTOP;
