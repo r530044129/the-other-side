@@ -23,6 +23,9 @@ jobs:
       - run: npm run build
         env:
           PAGES_BASE: /the-other-side/
+      - run: npx vite build --config vite.lite.config.ts
+        env:
+          PAGES_BASE: /the-other-side/
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

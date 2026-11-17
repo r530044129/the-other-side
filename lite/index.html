@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!-- added to the home screen, it opens full screen, without Safari's bars -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="theme-color" content="#020204" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>另一面 · THE OTHER SIDE — Reckoner</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='%23111'/></svg>"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+
+    <!-- Whisper-quiet Blade Runner 2049 atmospheric entrance trigger (click OR Spacebar) -->
+    <div id="start-veil" role="button" tabindex="0" aria-label="点击或按空格开启演奏">
+      <div class="veil-whisper">
+        <span class="veil-line"></span>
+        <span class="veil-text">点击画面 或 按下 SPACE 进入</span>
+        <span class="veil-line"></span>
+      </div>
+      <div class="veil-sound">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 15v-3a8 8 0 0 1 16 0v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><rect x="3" y="14" width="4.2" height="6.5" rx="1.6" fill="currentColor"/><rect x="16.8" y="14" width="4.2" height="6.5" rx="1.6" fill="currentColor"/></svg>
+        <span>这是一首歌的视觉演奏 · 请戴上耳机，打开声音</span>
+      </div>
+    </div>
+
+    <!-- Phones in portrait: the piece is landscape only for now -->
+    <div id="rotate-hint" aria-live="polite">
+      <svg viewBox="0 0 48 48" aria-hidden="true"><rect x="6" y="15" width="36" height="18" rx="3.5" fill="none" stroke="currentColor" stroke-width="1.4"/><line x1="37" y1="21" x2="37" y2="27" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+      <span>请把手机横过来</span>
+    </div>
+
+    <!-- Ultra-minimal in-world Spacebar whisper prompt (only shown briefly in Shot 2 & Shot 6, zero chrome) -->
+    <div id="subtle-prompt" aria-live="polite"></div>
+
+    <!-- Space-key hint: a thin keycap with a frame that closes on it as the strong beat arrives -->
+    <div id="space-hint" aria-hidden="true">
+      <span class="approach"></span>
+      <span class="key">SPACE<i class="fill"></i></span>
+      <span class="mode-label"></span>
+    </div>
+
+    <!-- What this is: the record, top left -->
+    <div id="album-card">
+      <img src="/img/in-rainbows.jpg" alt="In Rainbows" />
+      <div class="meta">
+        <div class="song">Reckoner</div>
+        <div class="band">Radiohead</div>
+        <div class="album">In Rainbows · 2007</div>
+      </div>
+    </div>
+
+    <!-- Timeline: faint progress line at the bottom; click or use the arrow keys to jump -->
+    <div id="timeline" role="slider" aria-label="时间轴">
+      <button class="pp" type="button" aria-label="播放 / 暂停" title="播放 / 暂停"><i></i></button>
+      <div class="track"><div class="fill"></div><div class="ticks"></div></div>
+      <div class="time"></div>
+    </div>
+
+    <!-- Lyric line (text comes from public/lyrics/reckoner-lyrics.json) -->
+    <div id="lyric-line" aria-live="off"></div>
+
+    <!-- Toggled strictly via [D] key: Full Scrubber + Shot Jumpers + Screen-Recording Telemetry & Event Log -->
+    <aside id="debug-panel" class="hidden" aria-label="Debug & Telemetry Console">
+      <div class="dbg-header">
+        <div>
+          <span class="dbg-badge">DEBUG · TELEMETRY</span>
+          <span id="dbg-shot-name" class="dbg-shot">① 0:00-0:10 油膜名与漩涡</span>
+        </div>
+        <div class="dbg-header-actions">
+          <button id="dbg-copy-btn" type="button" class="dbg-btn">Copy Snapshot JSON</button>
+          <span class="dbg-key-hint">[D] 隐藏</span>
+        </div>
+      </div>
+
+      <!-- Timeline Scrubber & Transport -->
+      <div class="dbg-transport">
+        <button id="dbg-play-btn" type="button" class="dbg-btn primary">▶ Play</button>
+        <input id="dbg-scrubber" type="range" min="0" max="286.05" step="0.02" value="0" />
+        <span id="dbg-timecode" class="dbg-mono">00:00.00 / 04:46.05</span>
+      </div>
+
+      <!-- Shot 1..7 Quick Jump + Loop Toggle + Speed + Mute -->
+      <div class="dbg-controls-row">
+        <div class="dbg-group" id="dbg-shot-buttons">
+          <button type="button" class="dbg-chip" data-shot="1">① 0:00</button>
+          <button type="button" class="dbg-chip" data-shot="2">② 0:10</button>
+          <button type="button" class="dbg-chip" data-shot="3">③ 0:46</button>
+          <button type="button" class="dbg-chip" data-shot="4">④ 1:19</button>
+          <button type="button" class="dbg-chip" data-shot="5">⑤ 2:24</button>
+          <button type="button" class="dbg-chip" data-shot="6">⑥ 3:18</button>
+          <button type="button" class="dbg-chip" data-shot="7">⑦ 4:03</button>
+        </div>
+        <div class="dbg-group">
+          <button id="dbg-loop-btn" type="button" class="dbg-chip">Loop Shot: OFF</button>
+          <button id="dbg-mute-btn" type="button" class="dbg-chip">🔊 Audio</button>
+          <select id="dbg-speed-select" class="dbg-select" title="Playback Speed">
+            <option value="0.25">0.25×</option>
+            <option value="0.5">0.5×</option>
+            <option value="1" selected>1.0×</option>
+            <option value="1.5">1.5×</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Live 4-Stem Energy Bars -->
+      <div class="dbg-stems">
+        <div class="stem-item"><span>DRUMS</span><div class="bar"><i id="bar-drums"></i></div><b id="val-drums">0.00</b></div>
+        <div class="stem-item"><span>BASS</span><div class="bar"><i id="bar-bass"></i></div><b id="val-bass">0.00</b></div>
+        <div class="stem-item"><span>VOCALS</span><div class="bar"><i id="bar-vocals"></i></div><b id="val-vocals">0.00</b></div>
+        <div class="stem-item"><span>OTHER</span><div class="bar"><i id="bar-other"></i></div><b id="val-other">0.00</b></div>
+      </div>
+
+      <!-- Dense Structured Physics / Lighting / Camera Readout for Screen Recording -->
+      <pre id="dbg-metrics" class="dbg-metrics"></pre>
+
+      <!-- Live Event & Parameter Log -->
+      <div id="dbg-log" class="dbg-log"></div>
+    </aside>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
